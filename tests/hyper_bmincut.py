@@ -1,0 +1,86 @@
+import sys
+sys.path.append('.')
+import subprocess
+from FEM import FEM
+import torch
+import pandas as pd
+
+from utils import *
+
+# num_trials = 500
+# num_steps = 1000
+
+num_trials = 50
+num_steps = 1000
+dev = 'cuda' # if you do not have gpu in your computing devices, then choose 'cpu' here
+
+case_type = 'hyperbmincut'
+# map_types = ['normal', 'star', 'clique', 'weighted_clique', 'bisecgraph']
+# map_types = ['normal', 'star']
+# map_types = ['star']
+map_types = ['normal']
+# epsilons = torch.linspace(0.01, 0.05, 5)
+epsilons = [0.02]
+instance_root_dir = '../partition/data/hypergraph_set/'
+# grad_options = [True, False]
+grad_options = [False]
+# instance_list = ['bibd_49_3.mtx.hgr',
+#                 #  'Pd_rhs.mtx.hgr',
+#                  'dac2012_superblue19.hgr',
+#                  'ISPD98_ibm07.hgr',
+#                  'G2_circuit.mtx.hgr']
+
+instance_list = ['bibd_49_3.mtx.hgr']
+
+# q_values = [2, 4, 8, 16, 32, 64]
+q_values = [4]
+
+results = []
+total_experiments = len(instance_list) * len(map_types) * len(epsilons) * len(grad_options) * len(q_values)
+current_experiment = 0
+
+for instance in instance_list:
+
+    hyperedges = parse_hypergraph_edges(instance_root_dir + instance)
+
+    for map_type in map_types:
+        for epsilon in epsilons:
+            for grad_type in grad_options:
+                for q in q_values:
+                    current_experiment += 1
+                    print(f"Progress: {current_experiment}/{total_experiments} ({current_experiment/total_experiments*100:.1f}%)")
+                    case_bmincut = FEM.from_file(case_type, instance_root_dir + instance, index_start=1, epsilon=epsilon, q=q, map_type=map_type)
+                    case_bmincut.set_up_solver(num_trials, num_steps, dev=dev, q=q, manual_grad= grad_type)
+                    config, result = case_bmincut.solve()
+                    optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
+                    best_config = config[optimal_inds[0]]
+                    print(f'{instance}, optimal value {result.min()}')
+
+                    group_assignment = best_config.argmax(dim=1).cpu().numpy()
+                    fem_cut_value = evaluate_kahypar_cut_value_simple(group_assignment, hyperedges)
+                    
+                    result = {            
+                        'instance': instance,
+                        'map_type': map_type,
+                        'epsilon': epsilon,
+                        'grad_type': grad_type,
+                        'q': q,
+                        'fem_cut_value': fem_cut_value
+                    }
+
+                    results.append(result)
+
+
+print("\n" + "="*80)
+print("FEM Hypergraph Partitioning Results")
+print("="*80)
+print(f"{'Instance':<20} {'Map Type':<15} {'Epsilon':<8} {'Manual Grad':<12} {'Q':<8} {'FEM Cut':<10}")
+print("-"*80)
+
+for result in results:
+    print(f"{result['instance']:<20} {result['map_type']:<15} {result['epsilon']:<8} "
+            f"{str(result['grad_type']):<12} {result['q']:<8} {result['fem_cut_value']:<10.4f} ")
+
+df = pd.DataFrame(results)
+df.to_csv('fem_hypergraph_results.csv', index=False)
+print(f"\nResults saved to fem_hypergraph_results.csv")

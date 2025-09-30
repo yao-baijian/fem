@@ -26,7 +26,7 @@ class Solver:
             self, 
             problem, num_trials, num_steps, betamin=0.01, betamax=0.5, 
             anneal='inverse', optimizer='adam', learning_rate=0.1, dev='cpu', 
-            dtype=torch.float32, seed=1, q=2,manual_grad=False, 
+            dtype=torch.float32, seed=1, q=2, manual_grad=False, 
             h_factor=0.01, sparse=False
         ):
         self.dtype = dtype

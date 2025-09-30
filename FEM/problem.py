@@ -55,6 +55,67 @@ def manual_grad_bmincut(J, p, imba):
     h_grad = (tp  - (tp * p).sum(2,keepdim=True).expand(tp.shape))*p
     return h_grad
 
+
+def balance_constrain_1(p, U_max, L_min):
+    # inbalance with constrain (relu version)
+    S_k = p.sum(dim=0)
+    balance_loss = torch.sum(torch.relu(S_k - U_max)) + torch.sum(torch.relu(L_min - S_k))
+    return balance_loss
+
+
+def balance_constrain_2(p, U_max, L_min, q):
+    # inbalance with constrain (softplus version)
+    group_sizes = p.sum(dim=1)  # [batch, q]
+    balance_loss = 0
+    for k in range(q):
+        size_k = group_sizes[:, k]
+        upper_violation = torch.nn.functional.softplus(size_k - U_max)
+        lower_violation = torch.nn.functional.softplus(L_min - size_k)
+        balance_loss += (upper_violation + lower_violation).mean()
+    return balance_loss
+
+
+    # optimizer.zero_grad()
+    # loss, p = balanced_mincut_loss_autodiff(h, W, lambda_penalty, epsilon, q, beta)
+    # loss.backward()
+    # optimizer.step()
+    # return loss, p
+
+def infer_hyperbmincut(J, p):
+    config = Func.one_hot(p.view(-1,J.shape[0],p.shape[-1]).argmax(dim=2), num_classes=p.shape[-1]).to(J.dtype)
+    return config, expected_bmincut(J, config) / 2
+
+def expected_hyperbmincut(J,p):
+    return ((J @ p) * (1-p)).sum((1, 2))
+
+
+def manual_grad_hyperbmincut(J, p, U_max, L_min, n, h, imbalance_weight, q):
+    
+    # 1. 计算概率分布 (需要softmax)
+    # p = torch.softmax(h, dim=-1)  # [batch, n_nodes, q]
+    
+    group_sizes = p.sum(dim=1)  # [batch, q] - 每个分组的"软节点数"
+    
+    temperature = 0.1
+    indicator_upper = torch.sigmoid((group_sizes - U_max) / temperature)  
+    indicator_lower = torch.sigmoid((L_min - group_sizes) / temperature)  
+    
+    balance_grad =  imbalance_weight * (indicator_upper - indicator_lower)  # [batch, q]
+    
+    # 扩展到每个节点：balance_grad_expanded[i,k] = balance_grad[batch,k]
+    balance_grad_expanded = balance_grad.unsqueeze(1).expand(-1, n, -1)  # [batch, n_nodes, q]
+    
+    cut_grad = torch.zeros_like(h)
+    for k in range(q):
+        p_k = p[:, :, k]  # [batch, n_nodes]
+        for b in range(batch_size):
+            cut_grad[b, :, k] = torch.matmul(J, 1 - 2 * p_k[b])
+    
+    total_grad = cut_grad + balance_grad_expanded
+    
+    return total_grad
+
+
 def infer_maxcut(J, p):
     """
     J: weight matrix, with shape [N, N]
@@ -112,7 +173,6 @@ def imbalance_penalty(p):
     """
     return ((p.sum(1))**2).sum(1) - (p*p).sum(2).sum(1)
 
-
 def expected_inner_weight(J,p):
     return 0.5*(J.sum() - expected_cut(J,p))
 
@@ -167,6 +227,8 @@ class OptimizationProblem:
             coupling_matrix, 
             problem_type, 
             imbalance_weight=5.0, 
+            epsilon=0.03,
+            q=2,
             discretization=False,
             customize_expected_func=None,
             customize_grad_func=None,
@@ -177,6 +239,10 @@ class OptimizationProblem:
         self.coupling_matrix = coupling_matrix
         self.problem_type = problem_type
         self.imbalance_weight = imbalance_weight
+
+        self.epsilon = epsilon
+        self.q = q
+
         self.discretization = discretization
         self.constant = 0
         self.customize_expected_func = customize_expected_func
@@ -190,6 +256,26 @@ class OptimizationProblem:
         if self.problem_type == 'bmincut':
             self.w2 = self.coupling_matrix.square().sum()
             self.imbalance_weight = self.imbalance_weight * self.w2 / (self.num_nodes**2)
+
+
+        if self.problem_type == 'hyperbmincut':
+
+
+            # self.w2 = self.coupling_matrix.square().sum()
+            # self.imbalance_weight = self.imbalance_weight * self.w2 / (self.num_nodes**2)
+
+            # TODO improved weight here
+
+            total_weight = self.coupling_matrix.sum()
+            num_edges = (self.coupling_matrix > 0).float().sum()
+            avg_weight = total_weight / num_edges if num_edges > 0 else 1.0
+            self.imbalance_weight = 0.5 * (avg_weight ** 0.5) * (self.num_nodes ** 0.25)
+
+            self.U_max = (1 + self.epsilon) * self.num_nodes / self.q
+            self.L_min = (1 - self.epsilon) * self.num_nodes / self.q
+
+            print(f"Set imbalance weight to {self.imbalance_weight}, U_max: {self.U_max}, L_min: {self.L_min}")
+
         if self.problem_type == 'modularity':
             self.d = self.coupling_matrix.sum(1).reshape([1, self.num_nodes, 1])
             self.m = self.coupling_matrix.sum() / 2
@@ -213,6 +299,13 @@ class OptimizationProblem:
         elif self.problem_type == 'bmincut':
             return expected_bmincut(self.coupling_matrix, p) + \
                 self.imbalance_weight * imbalance_penalty(p)
+        
+
+        elif self.problem_type == 'hyperbmincut':
+            return expected_hyperbmincut(self.coupling_matrix, p) + \
+                self.imbalance_weight * balance_constrain_1(p, self.U_max, self.L_min)
+        
+
         elif self.problem_type == 'modularity':
             return -expected_inner_weight(self.coupling_matrix, p) + \
                 expected_inner_weight_configmodel(self.coupling_matrix, p)
@@ -228,6 +321,11 @@ class OptimizationProblem:
             return manual_grad_maxcut(self.c * self.coupling_matrix, p, self.discretization)
         elif self.problem_type == 'bmincut':
             return manual_grad_bmincut(self.coupling_matrix, p, self.imbalance_weight)
+        
+        elif self.problem_type == 'hyperbmincut':
+            return manual_grad_hyperbmincut(self.coupling_matrix, p, self.U_max, self.L_min, self.imbalance_weight)
+        
+
         elif self.problem_type == 'modularity':
             return manual_grad_modularity(
                 self.coupling_matrix, p, self.m, self.d.expand(p.shape)
@@ -246,6 +344,11 @@ class OptimizationProblem:
             config, result = infer_maxcut(self.coupling_matrix, p)
         elif self.problem_type == 'bmincut':
             config, result = infer_bmincut(self.coupling_matrix, p)
+
+        elif self.problem_type == 'hyperbmincut':
+            config, result = infer_hyperbmincut(self.coupling_matrix, p)
+
+
         elif self.problem_type == 'vertexcover':
             config, result = infer_qubo(self.coupling_matrix, p)
         elif self.problem_type == 'maxksat':
