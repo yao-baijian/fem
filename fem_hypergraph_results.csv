@@ -1,2 +1,2 @@
-instance,map_type,epsilon,grad_type,q,fem_cut_value
-bibd_49_3.mtx.hgr,normal,0.02,False,4,0.0
+instance,map_type,epsilon,grad_type,q,fem_cut_value,group_counts
+bibd_49_3.mtx.hgr,normal,0.02,False,4,3007.0,[4649 4501 4594 4680]

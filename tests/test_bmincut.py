@@ -32,7 +32,7 @@ dev = 'cuda' # if you do not have gpu in your computing devices, then choose 'cp
 
 # hyper graph
 case_type = 'bmincut'
-instance = '../partition/data/hypergraph_set/bibd_49_3.mtx.hgr'
+instance = 'tests/test_instances/karate.txt'
 
 
 # instance = '../partition/data/hypergraph_set/Pd_rhs.mtx.hgr'
@@ -41,7 +41,7 @@ case_bmincut = FEM.from_file(case_type, instance, index_start=1)
 # print(f"FEM.from_file took: {time.time() - start_time:.4f} seconds")
 
 # start_time = time.time()
-case_bmincut.set_up_solver(num_trials, num_steps, dev=dev, q=2, manual_grad= True)
+case_bmincut.set_up_solver(num_trials, num_steps, dev=dev, q=2, manual_grad= False)
 # print(f"set_up_solver took: {time.time() - start_time:.4f} seconds")
 
 # start_time = time.time()
@@ -50,4 +50,4 @@ print(f"solve took: {time.time() - start_time:.4f} seconds")
 
 optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
 best_config = config[optimal_inds[0]]
-print(f'{instance}, optimal value {result.min()}')
+# print(f'{instance}, optimal value {result.min()}')

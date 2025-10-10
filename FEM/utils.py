@@ -143,38 +143,48 @@ def read_graph(file, index_start=0):
 
 def read_hypergraph_normal(file, index_start=1):
     with open(file, "r") as f:
-        # Read first line with number of vertices and hyperedges
         l = f.readline()
         m, n = [int(x) for x in l.split(" ") if x != "\n"]
         
-        # Collect all hyperedges
         hyperedges = []
         for _ in range(m):
             l = f.readline()
             vertices = [int(x) - index_start for x in l.split() if x != "\n"]
             hyperedges.append(vertices)
     
-    # Create all pairwise combinations
     all_pairs = []
+    all_weights = []
     for vertices in hyperedges:
         if len(vertices) >= 2:
-            # Generate all combinations of 2 vertices
             pairs = torch.combinations(torch.tensor(vertices), 2)
             all_pairs.append(pairs)
+            pair_weight = len(vertices) - 1
+            weights = torch.full((pairs.shape[0],), pair_weight)
+            all_weights.append(weights)
+
+    # indices = torch.cat(all_pairs, dim=0)
+    # indices_symmetric = torch.cat([indices, indices.flip(1)], dim=0)
+    # values = torch.ones(indices_symmetric.shape[0])
+    # J_sparse = torch.sparse_coo_tensor(indices_symmetric.t(), values, (n, n))
+    # J = J_sparse.to_dense()
     
-    # Concatenate all pairs
-    indices = torch.cat(all_pairs, dim=0)
+    if all_pairs:
+        indices = torch.cat(all_pairs, dim=0)
+        weights_tensor = torch.cat(all_weights, dim=0)
+    else:
+        indices = torch.empty((0, 2), dtype=torch.long)
+        weights_tensor = torch.empty(0)
     
-    # Create symmetric indices (u,v) and (v,u)
+    # Create symmetric indices and weights
     indices_symmetric = torch.cat([indices, indices.flip(1)], dim=0)
-    
-    # Create values (all ones)
-    values = torch.ones(indices_symmetric.shape[0])
+    weights_symmetric = torch.cat([weights_tensor, weights_tensor], dim=0)
     
     # Create sparse tensor and convert to dense
-    J_sparse = torch.sparse_coo_tensor(indices_symmetric.t(), values, (n, n))
+    J_sparse = torch.sparse_coo_tensor(indices_symmetric.t(), weights_symmetric, (n, n))
     J = J_sparse.to_dense()
     
+    # print(J)
+
     return n, m, J
 
 def read_hypergraph_star(file, index_start=1):

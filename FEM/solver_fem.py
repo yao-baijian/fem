@@ -85,7 +85,8 @@ class Solver:
     def iterate(self):
         h = self.initialize()
         self.set_up_optimizer(h)
-        for step in range(len(self.betas)):
+        step_max = len(self.betas)
+        for step in range(step_max):
             p = torch.sigmoid(h) if self.binary else torch.softmax(h, dim=2)
             self.opt.zero_grad()
             if self.binary:
@@ -98,7 +99,7 @@ class Solver:
                 h.grad = self.problem.manual_grad(p) - \
                     entropy_grad(p) / self.betas[step]
             else:
-                free_energy = self.problem.expectation(p) - \
+                free_energy = self.problem.expectation(p, step = step, step_max = step_max) - \
                     entropy(p) / self.betas[step]
                 free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
             self.opt.step()
