@@ -4,7 +4,8 @@ import pandas as pd
 from scipy.sparse import coo_matrix, csr_matrix, csc_matrix
 import warnings
 from collections import defaultdict
-import itertools
+import matplotlib.pyplot as plt
+
 warnings.filterwarnings('ignore')
 
 def parse_file(problem_type, filename, index_start=0, map_type = 'normal'):
@@ -24,7 +25,6 @@ def parse_file(problem_type, filename, index_start=0, map_type = 'normal'):
     elif problem_type == 'maxksat':
         n, m, J = read_cnf(filename)
     return n, m, J
-
 
 def load_matrix(path:'str',numer_package:'str',store_format:'str') -> 'float':
     """"
@@ -89,7 +89,6 @@ def load_matrix(path:'str',numer_package:'str',store_format:'str') -> 'float':
         print("Error: Input wrong 'numer_package'! Please choose from ['scipy', 'torch'].")
     return J
 
-
 def load_gset(instance):
     """
     load the weight matrix of Gset, modified from code of Zisong Shen
@@ -108,7 +107,6 @@ def load_gset(instance):
     target_value = int(result[0]) if result else 0
     # print('N=%d'%(J.shape[0])," c=%.2f"%(torch.count_nonzero(J.to_dense())*2/J.shape[0]),"best_cut:"+ target_value)
     return J.to_dense(), target_value
-
 
 def read_graph(file, index_start=0):
     """
@@ -158,7 +156,7 @@ def read_hypergraph_normal(file, index_start=1):
         if len(vertices) >= 2:
             pairs = torch.combinations(torch.tensor(vertices), 2)
             all_pairs.append(pairs)
-            pair_weight = len(vertices) - 1
+            pair_weight = 1
             weights = torch.full((pairs.shape[0],), pair_weight)
             all_weights.append(weights)
 
@@ -183,8 +181,6 @@ def read_hypergraph_normal(file, index_start=1):
     J_sparse = torch.sparse_coo_tensor(indices_symmetric.t(), weights_symmetric, (n, n))
     J = J_sparse.to_dense()
     
-    # print(J)
-
     return n, m, J
 
 def read_hypergraph_star(file, index_start=1):
@@ -448,3 +444,45 @@ def clause_mask_tensor(N, M, sat_table):
         clause.append(clause_m.unsqueeze(0))
     clause_batch = torch.cat(clause, dim=0)    #[M, batch, N, q]  # sparse tensor values = k * M * batch
     return clause_batch 
+
+def evaluate_kahypar_cut_value(assignment: np.ndarray, hyperedges: list, hyperedge_weights: list = None) -> float:
+    """
+    sum_{e in cut} (λ(e) - 1) * w(e)
+    """
+
+    if hyperedge_weights is None:
+        hyperedge_weights = [1.0] * len(hyperedges)
+    
+    total_cut_value = 0.0
+    
+    for hyperedge, weight in zip(hyperedges, hyperedge_weights):
+        groups_in_hyperedge = set()
+        for vertex in hyperedge:
+            if vertex < len(assignment):
+                groups_in_hyperedge.add(assignment[vertex])
+        
+        lambda_e = len(groups_in_hyperedge)
+
+        # print(lambda_e)
+        
+        if lambda_e > 1:
+            total_cut_value += (lambda_e - 1) * weight
+    
+    return total_cut_value
+
+def evaluate_kahypar_cut_value_simple(assignment: np.ndarray, hyperedges: list) -> float:
+    return evaluate_kahypar_cut_value(assignment, hyperedges, [1.0] * len(hyperedges))
+
+def plot_free_energy(history):
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+    
+    steps = history['step']
+    
+    # 1. Free Energy 主图
+    ax1.plot(steps, history['free_energy'], 'b-', linewidth=2, label='Free Energy')
+    ax1.set_xlabel('Iteration Step')
+    ax1.set_ylabel('Free Energy')
+    ax1.set_title('Free Energy Evolution')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    

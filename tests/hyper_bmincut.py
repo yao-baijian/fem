@@ -11,7 +11,7 @@ from utils import *
 # num_steps = 1000
 
 num_trials = 10
-num_steps = 1000
+num_steps = 500
 dev = 'cuda' # if you do not have gpu in your computing devices, then choose 'cpu' here
 
 case_type = 'hyperbmincut'
@@ -34,7 +34,8 @@ map_types = ['normal']
 epsilons = [0.02]
 grad_options = [False]
 q_values = [4]
-instance_list = ['bibd_49_3.mtx.hgr']
+instance_list = ['ISPD98_ibm01.hgr']
+# instance_list = ['bibd_49_3.mtx.hgr']
 
 results = []
 total_experiments = len(instance_list) * len(map_types) * len(epsilons) * len(grad_options) * len(q_values)
@@ -50,8 +51,8 @@ for instance in instance_list:
                 for q in q_values:
                     current_experiment += 1
                     print(f"Progress: {current_experiment}/{total_experiments} ({current_experiment/total_experiments*100:.1f}%)")
-                    case_bmincut = FEM.from_file(case_type, instance_root_dir + instance, index_start=1, epsilon=epsilon, q=q, map_type=map_type)
-                    case_bmincut.set_up_solver(num_trials, num_steps, optimizer='adam', learning_rate=0.1, dev=dev, q=q, manual_grad= grad_type)
+                    case_bmincut = FEM.from_file(case_type, instance_root_dir + instance, index_start=1, epsilon=epsilon, q=q, hyperedges = hyperedges, map_type=map_type)
+                    case_bmincut.set_up_solver(num_trials, num_steps, optimizer='adam', learning_rate=0.2, dev=dev, q=q, manual_grad= grad_type)
                     config, result = case_bmincut.solve()
                     optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
                     best_config = config[optimal_inds[0]]

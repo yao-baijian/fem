@@ -1,6 +1,7 @@
 import torch
 from .problem import OptimizationProblem
 from math import log
+from utils import *
 
 def entropy_q(p):
     """
@@ -38,6 +39,9 @@ class Solver:
         elif anneal == 'inverse':
             betas = 1 / torch.linspace(betamax, betamin, num_steps)
         self.betas = betas.to(self.dtype).to(self.dev) 
+
+        # print(f"betas: {self.betas}")
+
         self.num_trials = num_trials
         self.seed = seed
         self.q = q
@@ -64,6 +68,27 @@ class Solver:
                 [self.num_trials, self.problem.num_nodes, self.q], 
                 device=self.dev, dtype=self.dtype
             )
+
+            # # 改进的多分类初始化
+            # n_trials = self.num_trials
+            # n_nodes = self.problem.num_nodes
+            # q = self.q
+            
+            # # 方法1：为每个节点随机选择一个主簇并增强
+            # h = torch.randn(n_trials, n_nodes, q, device=self.dev, dtype=self.dtype) * 0.2
+            
+            # # 为每个节点随机选择主簇
+            # main_clusters = torch.randint(0, q, (n_trials, n_nodes), device=self.dev)
+            
+            # # 使用scatter_高效地增强主簇
+            # batch_indices = torch.arange(n_trials, device=self.dev).unsqueeze(1).expand(-1, n_nodes)
+            # node_indices = torch.arange(n_nodes, device=self.dev).unsqueeze(0).expand(n_trials, -1)
+            
+            # h[batch_indices, node_indices, main_clusters] += 3.0
+            
+            # # 乘以h_factor保持原有缩放
+            # h = self.h_factor * h
+
         if self.manual_grad:
             h.requires_grad=False
         else:
@@ -83,6 +108,12 @@ class Solver:
 
 
     def iterate(self):
+
+        history = {
+            'free_energy': [],
+            'step': [],
+        }
+
         h = self.initialize()
         self.set_up_optimizer(h)
         step_max = len(self.betas)
@@ -99,10 +130,67 @@ class Solver:
                 h.grad = self.problem.manual_grad(p) - \
                     entropy_grad(p) / self.betas[step]
             else:
-                free_energy = self.problem.expectation(p, step = step, step_max = step_max) - \
+                cut_loss, balance_loss = self.problem.expectation(p)
+                free_energy = cut_loss + balance_loss - \
                     entropy(p) / self.betas[step]
+                
+                # h_grad_cut = torch.autograd.grad(
+                #     cut_loss.sum(), h, retain_graph=True, allow_unused=True
+                # )[0]
+                # h_grad_balance = torch.autograd.grad(
+                #     balance_loss.sum(), h, retain_graph=True, allow_unused=True
+                # )[0]
+
                 free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
+
+                # print(f"Step {step}:")
+                # print(f"  cut_loss: {cut_loss.mean().item():.6f}")
+                # if h.grad is not None:
+                #     grad_norm = torch.norm(h.grad).item()
+                #     grad_mean = h.grad.mean().item()
+                #     grad_std = h.grad.std().item()
+                #     print(f"  h.grad - norm: {grad_norm:.6f}, mean: {grad_mean:.6f}, std: {grad_std:.6f}")
+                    
+                #     # 检查梯度是否太小（梯度消失）
+                #     if grad_norm < 1e-8:
+                #         print("  ⚠️ 警告: 梯度范数太小，可能梯度消失")
+                    
+                #     # 检查梯度是否太大（梯度爆炸）
+                #     if grad_norm > 1000:
+                #         print("  ⚠️ 警告: 梯度范数太大，可能梯度爆炸")
+
+                            # 分别计算各项的梯度
+
+                
+                # 记录梯度信息
+                # cut_grad_norm = torch.norm(h_grad_cut).item() if h_grad_cut is not None else 0.0
+                # balance_grad_norm = torch.norm(h_grad_balance).item() if h_grad_balance is not None else 0.0
+                
+                assignments = torch.argmax(p, dim=2)
+                group_assignment = assignments[0].cpu().numpy()  # [n_nodes]
+                kahypar_cut_value = evaluate_kahypar_cut_value_simple(group_assignment, self.problem.hyperedge)
+
+                # print(f"step {step} cut loss: {cut_loss.mean().item():.8f} balance_loss: {balance_loss.mean().item():.8f}")
+                # print(f"            cut_grad: {cut_grad_norm:.8f}          balance_grad: {balance_grad_norm:.8f}")
+                print(f"            kahypar_cut: {kahypar_cut_value:.8f}")
+
+                # probabilities = torch.softmax(p, dim=2)
+                # assignments = torch.argmax(probabilities, dim=2)
+                # one_hot = torch.nn.functional.one_hot(assignments, num_classes=n_clusters)
+                # S_k = one_hot.sum(dim=1).float()
+
+                # if cut_grad_norm < 1e-8:
+                #     print("⚠️  警告: cut_loss梯度接近0, 可能梯度消失")
+                # if balance_grad_norm < 1e-8:
+                #     print("⚠️  警告: balance_loss梯度接近0, 可能梯度消失")
+
+                # history['free_energy'].append(free_energy[0])
+                # history['step'].append(step)
+
             self.opt.step()
+
+        # plot_free_energy(history)
+
         return p
     
     def solve(self):

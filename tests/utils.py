@@ -35,6 +35,7 @@ def evaluate_kahypar_cut_value(assignment: np.ndarray, hyperedges: list, hypered
     """
     sum_{e in cut} (λ(e) - 1) * w(e)
     """
+
     if hyperedge_weights is None:
         hyperedge_weights = [1.0] * len(hyperedges)
     
@@ -47,6 +48,8 @@ def evaluate_kahypar_cut_value(assignment: np.ndarray, hyperedges: list, hypered
                 groups_in_hyperedge.add(assignment[vertex])
         
         lambda_e = len(groups_in_hyperedge)
+
+        # print(lambda_e)
         
         if lambda_e > 1:
             total_cut_value += (lambda_e - 1) * weight
