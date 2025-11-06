@@ -1,7 +1,7 @@
 import torch
 from .problem import OptimizationProblem
 from .solver_fem import Solver
-from .utils import parse_file
+from .utils import *
 
 
 class FEM:
@@ -12,15 +12,24 @@ class FEM:
         pass
 
     @classmethod
-    def from_file(cls, problem_type, filename, index_start=0, epsilon=0.03, q=2, hyperedges=None, map_type='normal',**args):
-        num_nodes, num_interactions, couplings = parse_file(
-            problem_type, filename, index_start, map_type
-        )
-        fem = cls()
-        fem.set_up_problem(
-            num_nodes, num_interactions, problem_type, couplings, epsilon=epsilon, hyperedges=hyperedges, q=q,**args
-        )
-        return fem
+    def from_file(cls, problem_type, filename, fpga_wrapper, index_start=0, epsilon=0.03, q=2, hyperedges=None, map_type='normal',**args):
+
+        if problem_type == 'fpga_placement':
+            num_inst, num_site, J, io_site_connect_matrix = parse_design(fpga_wrapper)
+            fem = cls()
+            fem.set_up_problem(
+                num_inst, num_site, problem_type, J, epsilon=epsilon, io_site_connect_matrix = io_site_connect_matrix, hyperedges=hyperedges, fpga_wrapper = fpga_wrapper, q=q,**args
+            )
+            return fem
+        else:
+            num_nodes, num_interactions, couplings = parse_file(
+                problem_type, filename, index_start, map_type
+            )
+            fem = cls()
+            fem.set_up_problem(
+                num_nodes, num_interactions, problem_type, couplings, epsilon=epsilon, hyperedges=hyperedges, q=q,**args
+            )
+            return fem
     
     @classmethod
     def from_couplings(cls, problem_type, num_nodes, num_interactions, couplings, **args):
@@ -32,12 +41,12 @@ class FEM:
 
     def set_up_problem(
             self, num_nodes, num_interactions, problem_type, coupling_matrix, 
-            imbalance_weight=5.0, epsilon=0.03, q=2, hyperedges=None, discretization=False, 
-            customize_expected_func=None, customize_grad_func=None,
+            imbalance_weight=5.0, epsilon=0.03, q=2, io_site_connect_matrix = None, hyperedges=None, fpga_wrapper = None,
+            discretization=False, customize_expected_func=None, customize_grad_func=None,
             customize_infer_func=None
         ):
         supported_types = [
-            'maxcut', 'bmincut', 'hyperbmincut', 'modularity', 'maxksat', 'vertexcover', 'customize'
+            'maxcut', 'bmincut', 'hyperbmincut', 'modularity', 'maxksat', 'vertexcover', 'fpga_placement', 'customize'
         ]
         if problem_type not in supported_types:
             raise ValueError(
@@ -45,7 +54,7 @@ class FEM:
             )
         self.problem = OptimizationProblem(
             num_nodes, num_interactions, coupling_matrix, 
-            problem_type, imbalance_weight, epsilon, q, hyperedges, discretization, 
+            problem_type, imbalance_weight, epsilon, q, io_site_connect_matrix, hyperedges, fpga_wrapper, discretization, 
             customize_expected_func, customize_grad_func, customize_infer_func
         )
 

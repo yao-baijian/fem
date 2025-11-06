@@ -606,18 +606,115 @@ def infer_maxksat(clause_batch, p):
     config = Func.one_hot(p.view(1,clause_batch.shape[1],clause_batch.shape[2],-1).argmax(dim=3), num_classes=p.shape[-1]).to(clause_batch.dtype)
     return config, expected_maxksat(clause_batch, config)
 
-
-
-
-def expected_fpga_placement(clause_batch, p):
-    return
+# def get_site_coordinates(self, expected_site_index, area_width):
+#     coords = []
+#     for site in self.available_target_sites:
+#         x = site.getInstanceX()
+#         y = site.getInstanceY()
+#         coords.append([x, y])
+#     site_coordinates = torch.tensor(coords, dtype=torch.float32)
     
-def infer_fpga_placement(clause_batch, p):
-    return
+#     return site_coordinates
 
+# TODO here hypothesis area is rectangle, use this to infer site index
+def get_site_coordinates_from_index(expected_site_index, area_width):
+    # coords = []
+    # for idx in expected_site_index:
+    #     x = idx % area_width
+    #     y = idx // area_width
+    #     coords.append([x, y])
+    
+    # return torch.tensor(coords, dtype=torch.float32)
 
+    # batch_size, num_instances = expected_site_index.shape
+    x_coords = expected_site_index % area_width
+    y_coords = expected_site_index // area_width
+    coords = torch.stack([x_coords, y_coords], dim=2)
+    return coords.float()
 
+# def get_site_coordinates_advanced(self, area_width, area_height=None, stride_x=1, stride_y=1):
+#     if area_height is None:
+#         area_height = (len(self.available_target_sites) + area_width - 1) // area_width
+    
+#     coords = []
+#     for idx in range(len(self.available_target_sites)):
+#         x = (idx % area_width) * stride_x
+#         y = (idx // area_width) * stride_y
+#         coords.append([x, y])
+    
+#     return torch.tensor(coords, dtype=torch.float32)
 
+def get_site_distance_matrix(coords):
+    coords_i = coords.unsqueeze(1)
+    coords_j = coords.unsqueeze(0)
+    distances = torch.sum(torch.abs(coords_i - coords_j), dim=2)
+    return distances
+
+def get_expected_placements_from_index(p, site_coords_matrix):
+    expected_coords = torch.matmul(p, site_coords_matrix)
+    return expected_coords
+
+def get_site_coords_all(num_locations, area_width):
+    indices = torch.arange(num_locations, dtype=torch.float32)
+    x_coords = indices % area_width
+    y_coords = indices // area_width
+    return torch.stack([x_coords, y_coords], dim=1)
+
+def get_hard_placements_from_index(p, area_width):
+    site_indices = torch.argmax(p, dim=2)
+    site_coords = get_site_coordinates_from_index(site_indices, area_width)
+    return site_coords
+
+def infer_site_coordinates(expected_site_index, area_width):
+    x_coords = expected_site_index % area_width
+    y_coords = expected_site_index // area_width
+    coords = torch.stack([x_coords, y_coords], dim=2)
+    return coords.float()
+
+def infer_placements(J, p, area_width, site_coords_matrix):
+    site_indices = torch.argmax(p, dim=2)
+    site_coords = get_site_coordinates_from_index(site_indices, area_width)
+    result = get_hpwl_loss(J, p, area_width, site_coords_matrix)
+    return site_coords, result
+
+def get_hpwl_loss(J, p, area_width, site_coords_matrix):
+    # expected_coords = get_hard_placements_from_index(p, area_width)
+
+    expected_coords = get_expected_placements_from_index(p, site_coords_matrix)
+    
+    coords_i = expected_coords.unsqueeze(2)  # [batch_size, num_instances, 1, 2]
+    coords_j = expected_coords.unsqueeze(1)  # [batch_size, 1, num_instances, 2]
+    
+    manhattan_dist = torch.sum(torch.abs(coords_i - coords_j), dim=-1)
+    
+    weighted_dist = manhattan_dist * J.unsqueeze(0)  # [batch_size, num_instances, num_instances]
+    
+    triu_mask = torch.triu(torch.ones_like(J), diagonal=1).bool()
+    weighted_dist_triu = weighted_dist[:, triu_mask]  # [batch_size, num_pairs]
+    
+    total_wirelength = torch.sum(weighted_dist_triu, dim=1)  # [batch_size]
+    # print(f'hpwl loss: {total_wirelength}')
+    return total_wirelength
+
+def get_constraints_loss(p):
+    site_usage = torch.sum(p, dim=1)
+    site_constraint_softplus = torch.sum(Func.softplus(site_usage - 1.0), dim=1)
+    return site_constraint_softplus
+
+def timing_loss(design, timer):
+    wirelength = get_hpwl_loss(design)
+    return max(0, 1000 - wirelength / 1000)
+
+def expected_fpga_placement(J, p, io_site_connect_matrix, site_coords_matrix, bbox_length):
+    total_energy = 0
+    hpwl_weight, timing_weight, constrain_weight = 1, 1, 100
+
+    constrain_loss = get_constraints_loss(p)
+    hpwl_loss = get_hpwl_loss(J, p, bbox_length, site_coords_matrix)
+
+    # total_energy += hpwl_weight *  hpwl_loss + constrain_weight * constrain_loss
+    
+    return hpwl_weight * hpwl_loss, constrain_weight * constrain_loss
 
 
 class OptimizationProblem:
@@ -632,7 +729,9 @@ class OptimizationProblem:
             imbalance_weight=5.0, 
             epsilon=0.03,
             q=2,
+            io_site_connect_matrix=None,
             hyperedge=None,
+            fpga_wrapper=None,
             discretization=False,
             customize_expected_func=None,
             customize_grad_func=None,
@@ -643,10 +742,13 @@ class OptimizationProblem:
         self.coupling_matrix = coupling_matrix
         self.problem_type = problem_type
         self.imbalance_weight = imbalance_weight
-
         self.epsilon = epsilon
         self.q = q
         self.hyperedge = hyperedge
+
+        self.fpga_wrapper = fpga_wrapper # rapidwright design object
+        self.io_site_connect_matrix = io_site_connect_matrix
+        self.site_coords_matrix = None
 
         self.discretization = discretization
         self.constant = 0
@@ -698,8 +800,10 @@ class OptimizationProblem:
             self.coupling_matrix = self.coupling_matrix.repeat(1, num_trials, 1, 1)
 
         if self.problem_type == 'fpga_placement':
-            # self.coupling_matrix = self.coupling_matrix.repeat(1, num_trials, 1, 1)
-
+            self.bbox_length = self.fpga_wrapper.bbox['area_length']
+            self.site_coords_matrix = get_site_coords_all(self.fpga_wrapper.num_of_sites, self.bbox_length)
+            return
+        
         if sparse:
             self.coupling_matrix = self.coupling_matrix.to_sparse()
 
@@ -737,7 +841,7 @@ class OptimizationProblem:
             return expected_maxksat(self.coupling_matrix, p.unsqueeze(0))
         
         elif self.problem_type == 'fpga_placement':
-            return expected_fpga_placement()
+            return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.bbox_length)
         
         elif self.problem_type == 'customize':
             return self.customize_expected_func(self.coupling_matrix, p)
@@ -762,14 +866,15 @@ class OptimizationProblem:
             return manual_grad_maxksat(self.coupling_matrix, p.unsqueeze(0)).squeeze(0)
         
         elif self.problem_type == 'fpga_placement':
-            return manual_grad_fpga_placement(self.coupling_matrix, p.unsqueeze(0)).squeeze(0)
-
+            return
+        
         elif self.problem_type == 'customize':
             return self.customize_grad_func(self.coupling_matrix, p)
             
     
     def inference_value(self, p):
-        p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0])
+        if (self.problem_type != 'fpga_placement'):
+            p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0])
         if self.problem_type == 'maxcut':
             config, result = infer_maxcut(self.coupling_matrix, p)
         elif self.problem_type == 'bmincut':
@@ -785,7 +890,7 @@ class OptimizationProblem:
             config, result = infer_maxksat(self.coupling_matrix, p.unsqueeze(0))
 
         elif self.problem_type == 'fpga_placement':
-            config, result = infer_fpga_placement(self.coupling_matrix, p.unsqueeze(0))
+            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
 
         elif self.problem_type == 'customize':
             return self.customize_infer_func(self.coupling_matrix, p)

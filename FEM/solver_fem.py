@@ -2,6 +2,7 @@ import torch
 from .problem import OptimizationProblem
 from math import log
 from utils import *
+from drawer import PlacementDrawer
 
 def entropy_q(p):
     """
@@ -55,6 +56,9 @@ class Solver:
             assert self.q == 2
         self.optimizer = optimizer
         self.learning_rate = learning_rate
+
+        self.drawer = PlacementDrawer(bbox = problem.fpga_wrapper.bbox)
+
         
     def initialize(self):
         torch.manual_seed(self.seed)
@@ -130,10 +134,10 @@ class Solver:
                 h.grad = self.problem.manual_grad(p) - \
                     entropy_grad(p) / self.betas[step]
             else:
-                cut_loss, balance_loss = self.problem.expectation(p)
-                free_energy = cut_loss + balance_loss - \
-                    entropy(p) / self.betas[step]
-                
+                # cut_loss, balance_loss = self.problem.expectation(p)
+                # free_energy = cut_loss + balance_loss - \
+                #     entropy(p) / self.betas[step]
+
                 # h_grad_cut = torch.autograd.grad(
                 #     cut_loss.sum(), h, retain_graph=True, allow_unused=True
                 # )[0]
@@ -141,10 +145,30 @@ class Solver:
                 #     balance_loss.sum(), h, retain_graph=True, allow_unused=True
                 # )[0]
 
-                free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
+                
+                # loss = self.problem.expectation(p)
+                # free_energy = loss - \
+                #     entropy(p) / self.betas[step]
 
+                # free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
+
+                hpwl_loss, constrain_loss = self.problem.expectation(p)
+                free_energy = hpwl_loss + constrain_loss - \
+                    entropy(p) / self.betas[step]
+
+                h_grad_balance = torch.autograd.grad(
+                    constrain_loss.sum(), h, retain_graph=True, allow_unused=True
+                )[0]
+
+                # print(f"Step {step}: Constrain Loss = {constrain_loss.mean().item():.6f}, Balance Grad Norm = {torch.norm(h_grad_balance).item():.6f}")
+                
+                free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
+                
+                if step in [0, 250, 500, 750, 1000]:
+                    # self.drawer.draw_placement_step(p, step)
+                    continue
                 # print(f"Step {step}:")
-                # print(f"  cut_loss: {cut_loss.mean().item():.6f}")
+                # print(f"  cut_loss: {hpwl_loss.mean().item():.6f}")
                 # if h.grad is not None:
                 #     grad_norm = torch.norm(h.grad).item()
                 #     grad_mean = h.grad.mean().item()
@@ -159,20 +183,18 @@ class Solver:
                 #     if grad_norm > 1000:
                 #         print("  ⚠️ 警告: 梯度范数太大，可能梯度爆炸")
 
-                            # 分别计算各项的梯度
-
                 
                 # 记录梯度信息
                 # cut_grad_norm = torch.norm(h_grad_cut).item() if h_grad_cut is not None else 0.0
                 # balance_grad_norm = torch.norm(h_grad_balance).item() if h_grad_balance is not None else 0.0
                 
-                assignments = torch.argmax(p, dim=2)
-                group_assignment = assignments[0].cpu().numpy()  # [n_nodes]
-                kahypar_cut_value = evaluate_kahypar_cut_value_simple(group_assignment, self.problem.hyperedge)
+                # assignments = torch.argmax(p, dim=2)
+                # group_assignment = assignments[0].cpu().numpy()  # [n_nodes]
+                # kahypar_cut_value = evaluate_kahypar_cut_value_simple(group_assignment, self.problem.hyperedge)
 
                 # print(f"step {step} cut loss: {cut_loss.mean().item():.8f} balance_loss: {balance_loss.mean().item():.8f}")
                 # print(f"            cut_grad: {cut_grad_norm:.8f}          balance_grad: {balance_grad_norm:.8f}")
-                print(f"            kahypar_cut: {kahypar_cut_value:.8f}")
+                # print(f"            kahypar_cut: {kahypar_cut_value:.8f}")
 
                 # probabilities = torch.softmax(p, dim=2)
                 # assignments = torch.argmax(probabilities, dim=2)

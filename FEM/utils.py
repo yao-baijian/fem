@@ -6,6 +6,10 @@ import warnings
 from collections import defaultdict
 import matplotlib.pyplot as plt
 
+import rapidwright
+
+from com.xilinx.rapidwright.design import Design
+
 warnings.filterwarnings('ignore')
 
 def parse_file(problem_type, filename, index_start=0, map_type = 'normal'):
@@ -25,6 +29,47 @@ def parse_file(problem_type, filename, index_start=0, map_type = 'normal'):
     elif problem_type == 'maxksat':
         n, m, J = read_cnf(filename)
     return n, m, J
+
+def parse_design(fpga_wrapper):
+
+    n = len(fpga_wrapper.optimizable_sites)
+    m = len(fpga_wrapper.available_sites)
+    J = torch.zeros((n, n))
+
+    for source_site, connections in fpga_wrapper.site_to_site_connectivity.items():
+        source_id = fpga_wrapper.get_site_inst_id_by_name(source_site)
+        if source_id is not None:
+            for target_site, connection_count in connections.items():
+                target_id = fpga_wrapper.get_site_inst_id_by_name(target_site)
+                if target_id is not None:
+                    J[source_id, target_id] = connection_count
+                else:
+                    print(f'ERROR: cannot find site target id {target_id}')
+        else:
+            print(f'ERROR: cannot find site source id {source_site}')
+    
+    print(f'INFO: site matrix {n} x {n}')
+
+    k = len(fpga_wrapper.fixed_sites)
+
+    J_extend = torch.zeros((n + k, n + k))
+
+    for source_site, connections in fpga_wrapper.io_to_site_connectivity.items():
+        source_id = fpga_wrapper.get_site_inst_id_by_name(source_site)
+        if source_id is not None:
+            for target_site, connection_count in connections.items():
+                target_id = fpga_wrapper.get_site_inst_id_by_name(target_site)
+                if target_id is not None:
+                    J_extend[source_id, target_id] = connection_count
+                else:
+                    print(f'ERROR: cannot find site target id {target_id}')
+        else:
+            print(f'ERROR: cannot find site source id {source_site}')
+    
+    print(f'INFO: io site matrix {n + k} x {n + k}')
+
+    return n, m, J, J_extend
+
 
 def load_matrix(path:'str',numer_package:'str',store_format:'str') -> 'float':
     """"
