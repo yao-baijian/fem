@@ -32,7 +32,7 @@ def parse_file(problem_type, filename, index_start=0, map_type = 'normal'):
 
 def parse_design(fpga_wrapper):
 
-    n = len(fpga_wrapper.optimizable_sites)
+    n = len(fpga_wrapper.optimizable_insts)
     m = len(fpga_wrapper.available_sites)
     J = torch.zeros((n, n))
 
@@ -47,10 +47,8 @@ def parse_design(fpga_wrapper):
                     print(f'ERROR: cannot find site target id {target_id}')
         else:
             print(f'ERROR: cannot find site source id {source_site}')
-    
-    print(f'INFO: site matrix {n} x {n}')
 
-    k = len(fpga_wrapper.fixed_sites)
+    k = len(fpga_wrapper.fixed_insts)
 
     J_extend = torch.zeros((n + k, n + k))
 
@@ -66,7 +64,7 @@ def parse_design(fpga_wrapper):
         else:
             print(f'ERROR: cannot find site source id {source_site}')
     
-    print(f'INFO: io site matrix {n + k} x {n + k}')
+    print(f'INFO: site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
 
     return n, m, J, J_extend
 
