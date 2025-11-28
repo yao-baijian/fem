@@ -13,7 +13,6 @@ def entropy_q(p):
 def entropy_grad_q(p):
     return -p * (torch.log(p) - (p*torch.log(p)).sum(2,keepdim=True).expand(p.shape))
 
-
 def entropy_binary(p):
     return - ((p*torch.log(p)) + (1-p)*torch.log(1-p)).sum(1)
 
@@ -64,6 +63,7 @@ class Solver:
                 device=self.dev, dtype=self.dtype
             )
         else:
+# **********************************   Start   *********************************** #
             if self.problem.problem_type == 'fpga_placement':
                 # num_trials = self.num_trials
                 # num_nodes = self.problem.num_nodes
@@ -77,6 +77,9 @@ class Solver:
                 # peripheral_mask[center_site_idx] = False
                 # h[:, :, peripheral_mask] = peripheral_strength
                 # h += self.h_factor * 0.1 * torch.randn_like(h)
+
+                # Initialize separate potentials for X and Y coordinates in FPGA placement
+                # Each coordinate dimension gets its own probability distribution over site positions
                 h_x = self.h_factor * torch.randn(
                     [self.num_trials, self.problem.num_nodes,  self.length], 
                     device=self.dev, dtype=self.dtype
@@ -90,7 +93,7 @@ class Solver:
                 h_x.requires_grad=True
                 h_y.requires_grad=True
                 return h_x, h_y
-
+# **********************************    END    *********************************** #
             else:
                 h = self.h_factor * torch.randn(
                     [self.num_trials, self.problem.num_nodes, self.q], 
@@ -273,8 +276,15 @@ class Solver:
         self.drawer.draw_multi_step_placement()
 
         return p
-    
+
+# **********************************   Start   *********************************** #
     def iterate_placement(self):
+
+        """
+        FEM optimization loop for FPGA placement with separate X/Y coordinates.
+        Uses free energy minimization with HPWL and constraint losses.
+        """
+
         record_steps = [0, 250, 500, 750, 999]
 
         h_x, h_y = self.initialize()
@@ -321,13 +331,17 @@ class Solver:
         self.drawer.draw_multi_step_placement()
 
         return p_x, p_y
-    
+# **********************************   Start   *********************************** #
+
     def solve(self):
+
+# **********************************   Start   *********************************** # 
         if self.problem.problem_type == 'fpga_placement':
             marginal_x, marginal_y = self.iterate_placement()
             configs, results = self.problem.inference_value([marginal_x, marginal_y])
             return configs, results
-        
+# **********************************    END    *********************************** # 
+
         marginal = self.iterate()
         configs, results = self.problem.inference_value(marginal)
         return configs, results

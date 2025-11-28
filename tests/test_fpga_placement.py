@@ -9,6 +9,11 @@ from FEM.placement.router import Router
 
 # with cell and net: ./vivado/output_dir/post_impl.dcp
 # only logic netlist: ./vivado/output_dir/post_synth.dcp
+
+
+# def 
+
+
 num_trials = 10
 num_steps = 1000
 dev = 'cpu'
@@ -21,6 +26,18 @@ fpga_placement_wrapper.init_placement('./vivado/output_dir/post_impl.dcp', 'opti
 
 case_placements = FEM.from_file(case_type, instance, fpga_placement_wrapper, index_start=1)
 site_to_site_connect_matrix = case_placements.problem.coupling_matrix
+
+
+
+# case_customize = FEM.from_couplings(
+#     'customize', num_nodes, num_interactions, couplings,
+#     customize_expected_func=customize_expected_func,
+#     customize_infer_func=customize_infer_func
+# )
+
+# elif self.problem_type == 'fpga_placement':
+#     return expected_fpga_placement_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
+    # return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.net_sites_tensor, self.best_hpwl)
 
 area_size = fpga_placement_wrapper.bbox['area_size']
 global_drawer = PlacementDrawer(bbox = fpga_placement_wrapper.bbox)

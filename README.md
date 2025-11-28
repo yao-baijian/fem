@@ -43,3 +43,7 @@ You can run the jupyter notebooks in [benchmarks](/benchmarks) to reproduce the 
 ## Placement run
 
 To run FPGA placement, there has to be `VIVADO` installed. Because `rapidwright` needs to call `VIVADO` for design file unpack
+
+Basic of FPGA, see https://www.rapidwright.io/docs/FPGA_Architecture.html
+
+Basic of FPGA placement, see https://www.rapidwright.io/docs/Xilinx_Architecture.html
