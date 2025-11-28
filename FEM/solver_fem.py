@@ -2,7 +2,6 @@ import torch
 from .problem import *
 from math import log
 from utils import *
-from drawer import PlacementDrawer
 
 def entropy_q(p):
     """

@@ -19,14 +19,27 @@ You can run the jupyter notebooks in [benchmarks](/benchmarks) to reproduce the 
 
 ## Installation
 
-One can use conda to install the package with the following commands:
-```bash
-conda env create -f environment.yml
-```
-this will create an environment named `fem` with all the dependencies except for the pytorch, then activate the environment with `conda activate fem`.
+1. One can use conda to install the package with the following commands:
+    ```bash
+    conda env create -f environment.yml
+    ```
+    this will create an environment named `fem` with all the dependencies except for the pytorch, then activate the environment with `conda activate fem`.
 
-Then `pytorch` have to be installed manually with 
-```bash
-pip3 install torch torchvision torchaudio
-```
-see the [pytorch website](https://pytorch.org/) for more details.
+2. Then `pytorch` have to be installed manually with 
+    ```bash
+    pip3 install torch torchvision torchaudio
+    ```
+    see the [pytorch website](https://pytorch.org/) for more details.
+
+3. `rapidwright` can be installed manually with 
+
+    ```bash
+    pip install rapidwright
+    ```
+
+    see the [rapidwright website](https://www.rapidwright.io/docs/Install_RapidWright_as_a_Python_PIP_Package.html) for more details.
+
+
+## Placement run
+
+To run FPGA placement, there has to be `VIVADO` installed. Because `rapidwright` needs to call `VIVADO` for design file unpack

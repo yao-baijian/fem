@@ -40,8 +40,10 @@ class FpgaPlacer:
         self.clock_insts = []
 
         self.cells = []
-        self.area_info = {}
         self.bbox = {}
+        self.io_area = {}
+        self.clock_area = {}
+
         self.unfixed_placements = {}
         self.fixed_placements = {}
 
@@ -161,7 +163,7 @@ class FpgaPlacer:
             self.available_site_to_id[site_name] = idx
             self.available_id_to_site[idx] = site_name
 
-    def estimate_place_areas(self, design):
+    def init_place_areas(self, design):
         
         total_site_insts = len(design.getSiteInsts())
         other_sites = total_site_insts - (len(self.optimizable_insts) + len(self.fixed_insts))
@@ -202,6 +204,60 @@ class FpgaPlacer:
         }
         
         print(f"INFO: estimate area {side_length} x {side_length} , start=({start_x},{start_y}), end=({end_x},{end_y})")
+
+    def _init_io_area(self):
+        num_pins = len(self.fixed_insts)
+        
+        io_width = 1
+        io_height = num_pins
+        
+        io_start_x = self.bbox['start_x'] - io_width - 2
+        io_end_x = io_start_x + io_width
+        
+        bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
+        io_start_y = bbox_center_y - io_height // 2
+        io_end_y = io_start_y + io_height
+        
+        self.io_area = {
+            'type': 'left_io',
+            'start_x': io_start_x,
+            'end_x': io_end_x,
+            'start_y': io_start_y,
+            'end_y': io_end_y,
+            'width': io_width,
+            'height': io_height,
+            'center_y': (io_start_y + io_end_y) // 2,
+            'num_pins': num_pins
+        }
+        
+        print(f"INFO: Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_end_x}, {io_end_y})")
+
+    def _init_clock_buffer_area(self):
+        num_clk_buf = len(self.clock_insts)
+        
+        clock_width = 1
+        clock_height = num_clk_buf
+        
+        clock_start_x = self.bbox['start_x'] - 1
+        clock_end_x = clock_start_x + clock_width
+        
+        bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
+        clock_start_y = bbox_center_y - clock_height // 2
+        clock_end_y = clock_start_y + clock_height
+        
+        self.clock_area = {
+            'type': 'clock_buffers',
+            'start_x': clock_start_x,
+            'end_x': clock_end_x,
+            'start_y': clock_start_y,
+            'end_y': clock_end_y,
+            'width': clock_width,
+            'height': clock_height,
+            'center_y': (clock_start_y + clock_end_y) // 2,
+            'num_pins': num_clk_buf,
+        }
+        
+        print(f"INFO: Clock buffer area - position: ({clock_start_x}, {clock_start_y}) to ({clock_end_x}, {clock_end_y})")
 
     def random_initial_placement(self, design):
     
@@ -398,7 +454,9 @@ class FpgaPlacer:
         self.get_optimizable_insts(design)      # SLICEL
         self.get_fixed_insts(design)            # HPIOB, BITSLICE_COMPONENT_RX_TX
         self.get_clock_insts(design)            # BUFGCE
-        self.estimate_place_areas(design)
+        self.init_place_areas(design)
+        self._init_io_area()
+        self._init_clock_buffer_area()
         self.get_available_target_sites(device)
         self.map_site_to_id()
         self.record_site_connectivity()

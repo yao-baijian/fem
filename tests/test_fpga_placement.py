@@ -1,9 +1,11 @@
-from placement_simplified import FpgaPlacer
+import sys
+sys.path.append('.')
+from FEM.placement.placement_simplified import FpgaPlacer
 from FEM import FEM
 import torch
-from drawer import PlacementDrawer
-from legalizer import Legalizer
-from router import Router
+from FEM.placement.drawer import PlacementDrawer
+from FEM.placement.legalizer import Legalizer
+from FEM.placement.router import Router
 
 # with cell and net: ./vivado/output_dir/post_impl.dcp
 # only logic netlist: ./vivado/output_dir/post_synth.dcp
