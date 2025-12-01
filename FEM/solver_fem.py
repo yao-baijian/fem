@@ -53,8 +53,6 @@ class Solver:
         self.learning_rate = learning_rate
         self.drawer = drawer
 
-        self.length = self.problem.fpga_wrapper.bbox['area_length']
-
     def initialize(self):
         torch.manual_seed(self.seed)
         if self.binary:
@@ -65,6 +63,7 @@ class Solver:
         else:
 # **********************************   Start   *********************************** #
             if self.problem.problem_type == 'fpga_placement':
+                self.length = self.problem.fpga_wrapper.bbox['area_length']
                 # num_trials = self.num_trials
                 # num_nodes = self.problem.num_nodes
                 # center_site_idx = self.q // 2
@@ -152,18 +151,10 @@ class Solver:
             )
     
     def iterate(self):
-
-        history = {
-            'hpwl': [],
-        }
-
-        record_steps = [0, 250, 500, 750, 999]
-
         h = self.initialize()
         self.set_up_optimizer(h)
         step_max = len(self.betas)
         for step in range(step_max):
-            # print(h[:, :, self.q // 2])
             p = torch.sigmoid(h) if self.binary else torch.softmax(h, dim=2)
             self.opt.zero_grad()
             if self.binary:
@@ -176,104 +167,12 @@ class Solver:
                 h.grad = self.problem.manual_grad(p) - \
                     entropy_grad(p) / self.betas[step]
             else:
-                # cut_loss, balance_loss = self.problem.expectation(p)
-                # free_energy = cut_loss + balance_loss - \
-                #     entropy(p) / self.betas[step]
-
-                # h_grad_cut = torch.autograd.grad(
-                #     cut_loss.sum(), h, retain_graph=True, allow_unused=True
-                # )[0]
-                # h_grad_balance = torch.autograd.grad(
-                #     balance_loss.sum(), h, retain_graph=True, allow_unused=True
-                # )[0]
-
-                
-                # loss = self.problem.expectation(p)
-                # free_energy = loss - \
-                #     entropy(p) / self.betas[step]
-
-                # free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
-
-                hpwl_loss, constrain_loss = self.problem.expectation(p)
-
-                free_energy = hpwl_loss + constrain_loss - \
-                    entropy(p) / self.betas[step]
-
-                # free_energy = constrain_loss - \
-                #     entropy(p) / self.betas[step]
-                
-                h_grad_hpwl = torch.autograd.grad(
-                    hpwl_loss, h, grad_outputs=torch.ones_like(hpwl_loss), retain_graph=True, allow_unused=True
-                )
-
-                h_grad_constrain = torch.autograd.grad(
-                    constrain_loss, h, grad_outputs=torch.ones_like(constrain_loss), retain_graph=True, allow_unused=True
-                )
-                
-                h_grad_hpwl_norm = []
-                h_grad_constrain_norm = []
-
-                for i in range(len(h_grad_hpwl)):
-                    h_grad_hpwl_norm.append(torch.norm(h_grad_hpwl[i]).item())
-                    h_grad_constrain_norm.append(torch.norm(h_grad_constrain[i]).item())
-
-                if step in record_steps:
-                    print(f"INFO, step {step}, hpwl Loss = {[f'{x:.2f}' for x in hpwl_loss.tolist()]}, \n \
-                        hpwl grad norm = {h_grad_hpwl_norm}, \n \
-                        constrain loss = {[f'{x:.2f}' for x in constrain_loss.tolist()]}, \n \
-                        constrain grad norm = {h_grad_constrain_norm} ")
-                
+                free_energy = self.problem.expectation(p) \
+                    - entropy(p) / self.betas[step]
                 free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
-                # print(f"Step {step}:")
-                # print(f"  cut_loss: {hpwl_loss.mean().item():.6f}")
-                # if h.grad is not None:
-                #     grad_norm = torch.norm(h.grad).item()
-                #     grad_mean = h.grad.mean().item()
-                #     grad_std = h.grad.std().item()
-                #     print(f"  h.grad - norm: {grad_norm:.6f}, mean: {grad_mean:.6f}, std: {grad_std:.6f}")
-                    
-                #     # 检查梯度是否太小（梯度消失）
-                #     if grad_norm < 1e-8:
-                #         print("  ⚠️ 警告: 梯度范数太小，可能梯度消失")
-                    
-                #     # 检查梯度是否太大（梯度爆炸）
-                #     if grad_norm > 1000:
-                #         print("  ⚠️ 警告: 梯度范数太大，可能梯度爆炸")
-
-                
-                # 记录梯度信息
-                # cut_grad_norm = torch.norm(h_grad_cut).item() if h_grad_cut is not None else 0.0
-                # balance_grad_norm = torch.norm(h_grad_balance).item() if h_grad_balance is not None else 0.0
-                
-                # assignments = torch.argmax(p, dim=2)
-                # group_assignment = assignments[0].cpu().numpy()  # [n_nodes]
-                # kahypar_cut_value = evaluate_kahypar_cut_value_simple(group_assignment, self.problem.hyperedge)
-
-                # print(f"step {step} cut loss: {cut_loss.mean().item():.8f} balance_loss: {balance_loss.mean().item():.8f}")
-                # print(f"            cut_grad: {cut_grad_norm:.8f}          balance_grad: {balance_grad_norm:.8f}")
-                # print(f"            kahypar_cut: {kahypar_cut_value:.8f}")
-
-                # probabilities = torch.softmax(p, dim=2)
-                # assignments = torch.argmax(probabilities, dim=2)
-                # one_hot = torch.nn.functional.one_hot(assignments, num_classes=n_clusters)
-                # S_k = one_hot.sum(dim=1).float()
-
-                # if cut_grad_norm < 1e-8:
-                #     print("⚠️  警告: cut_loss梯度接近0, 可能梯度消失")
-                # if balance_grad_norm < 1e-8:
-                #     print("⚠️  警告: balance_loss梯度接近0, 可能梯度消失")
-
-                # history['free_energy'].append(free_energy[0])
-                # history['step'].append(step)
-
             self.opt.step()
-            # print(step)
-            if step in record_steps:
-                # print(" Recording placement at step ", step)
-                sites_coords = get_hard_placements_from_index(p, self.problem.site_coords_matrix)
-                self.drawer.add_placement(sites_coords[0], step)
 
-        self.drawer.draw_multi_step_placement()
+        # self.drawer.draw_multi_step_placement()
 
         return p
 

@@ -14,13 +14,15 @@ class FEM:
     @classmethod
     def from_file(cls, problem_type, filename, fpga_wrapper, index_start=0, epsilon=0.03, q=2, hyperedges=None, map_type='normal',**args):
 
+# **********************************   START   *********************************** # 
         if problem_type == 'fpga_placement':
-            num_inst, num_site, J, io_site_connect_matrix = parse_design(fpga_wrapper)
+            num_inst, num_site, J, io_site_connect_matrix = parse_design(fpga_wrapper) 
             fem = cls()
             fem.set_up_problem(
                 num_inst, num_site, problem_type, J, epsilon=epsilon, io_site_connect_matrix = io_site_connect_matrix, hyperedges=hyperedges, fpga_wrapper = fpga_wrapper, q=q,**args
             )
             return fem
+# **********************************    END    *********************************** # 
         else:
             num_nodes, num_interactions, couplings = parse_file(
                 problem_type, filename, index_start, map_type

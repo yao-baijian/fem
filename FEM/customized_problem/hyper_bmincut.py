@@ -1,30 +1,23 @@
 import torch
 import torch.nn.functional as Func
+import numpy as np
 
 def balance_constrain(J, p, U_max, L_min):
-    # relu hard regu
-    # S_k = p.sum(dim=1)
-    # config, result = infer_hyperbmincut(J, p)
-    # optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
-    # best_config = config[optimal_inds[0]]
-    # group_assignment = best_config.argmax(dim=1).cpu().numpy()
-    # group_counts = np.bincount(group_assignment, minlength=4)
+    S_k = p.sum(dim=1)  # [batch, n_clusters] - 完全可微
 
-    # batch_size, n_nodes, n_clusters = p.shape
+    # with torch.no_grad():
+    #     probabilities = torch.softmax(p, dim=2)
+    #     assignments = torch.argmax(probabilities, dim=2)
+    #     actual_counts = torch.nn.functional.one_hot(assignments, n_clusters).sum(dim=1)
+    #     print(f"actual partition: {actual_counts.tolist()[0]} soft partition: {S_k.tolist()[0]}")
     
-    # probabilities = torch.softmax(p, dim=2)
-    # assignments = torch.argmax(probabilities, dim=2)
-    # one_hot = torch.nn.functional.one_hot(assignments, num_classes=n_clusters)
-    # S_k = one_hot.sum(dim=1).float()
+    upper_violation = torch.relu(S_k - U_max)
+    lower_violation = torch.relu(L_min - S_k)
 
-    # print(f"group_counts: {group_counts}")
-    # print(f"S_k: {S_k}")
-    # upper_violation = torch.relu(S_k - U_max)
-    # lower_violation = torch.relu(L_min - S_k)
-    # balance_loss = upper_violation.sum(dim=1)
-    # balance_loss = upper_violation.sum(dim=1) + lower_violation.sum(dim=1)
+    balance_loss = upper_violation.sum(dim=1) + lower_violation.sum(dim=1)
+    return balance_loss
 
-
+def balance_constrain_softplus(J, p, U_max, L_min):
     # softplus 
     # S_k = p.sum(dim=1)
     # softplus(x) = log(1 + exp(beta * x)) / beta
@@ -43,32 +36,37 @@ def balance_constrain(J, p, U_max, L_min):
     # balance_loss = upper_violation.sum(dim=1) + lower_violation.sum(dim=1)
     # print(f"balance_loss: {balance_loss}")
     # return balance_loss
+    pass
 
+def balance_constrain_relu(J, p, U_max, L_min):
+    # relu hard regu
+    S_k = p.sum(dim=1)
+    config, result = infer_hyperbmincut(J, p)
+    optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
+    best_config = config[optimal_inds[0]]
+    group_assignment = best_config.argmax(dim=1).cpu().numpy()
+    group_counts = np.bincount(group_assignment, minlength=4)
 
     batch_size, n_nodes, n_clusters = p.shape
     
-    # 使用概率和作为分组大小的可微近似
-    S_k = p.sum(dim=1)  # [batch, n_clusters] - 完全可微
-    
-    # 仅用于打印实际分组情况（不影响梯度）
-    # with torch.no_grad():
-    #     probabilities = torch.softmax(p, dim=2)
-    #     assignments = torch.argmax(probabilities, dim=2)
-    #     actual_counts = torch.nn.functional.one_hot(assignments, n_clusters).sum(dim=1)
-    #     print(f"actual partition: {actual_counts.tolist()[0]} soft partition: {S_k.tolist()[0]}")
-    
+    probabilities = torch.softmax(p, dim=2)
+    assignments = torch.argmax(probabilities, dim=2)
+    one_hot = torch.nn.functional.one_hot(assignments, num_classes=n_clusters)
+    S_k = one_hot.sum(dim=1).float()
+
+    print(f"group_counts: {group_counts}")
+    print(f"S_k: {S_k}")
     upper_violation = torch.relu(S_k - U_max)
     lower_violation = torch.relu(L_min - S_k)
-
     balance_loss = upper_violation.sum(dim=1) + lower_violation.sum(dim=1)
-    # print(f"balance_loss: {balance_loss}")
+
     return balance_loss
 
-def infer_hyperbmincut(J, p):
+def infer_hyperbmincut(J, p, hyperedges):
     config = Func.one_hot(p.view(-1,J.shape[0],p.shape[-1]).argmax(dim=2), num_classes=p.shape[-1]).to(J.dtype)
-    return config, expected_bmincut(J, config) / 2
+    return config, expected_hyperbmincut(J, config, hyperedges) / 2
 
-def expected_hyperbmincut(J, p,  hyperedges):
+def expected_hyperbmincut(J, p, hyperedges):
     # return ((J @ p) * (1-p)).sum((1, 2))
     # n_hyperedges = J.shape
     # n_groups = p.shape[1]
@@ -88,24 +86,6 @@ def expected_hyperbmincut(J, p,  hyperedges):
     
     # return expected_cut_value
 
-
-
-    # total_cut_value = 0.0
-    
-    # for he_idx, he in enumerate(hyperedges):
-    #     weight = 1.0
-    #     k = len(he)
-        
-    #     he_probs = p[:, he, :]  # [batch, k, num_clusters]
-    #     expected_nodes_per_cluster = torch.sum(he_probs, dim=1)  # [batch, m]
-    #     max_expected_nodes = torch.max(expected_nodes_per_cluster, dim=1)[0]
-    #     cut_value = 1 - (max_expected_nodes / k)
-    #     total_cut_value = total_cut_value + cut_value
-    
-    # print(f"Weighted Cut value: {total_cut_value}")
-    # return total_cut_value
-
-
     total_cut_value = 0.0
     
     for he_idx, he in enumerate(hyperedges):
@@ -124,89 +104,6 @@ def expected_hyperbmincut(J, p,  hyperedges):
     
     # print(f"Weighted Cut value: {total_cut_value}")
     return total_cut_value
-
-
-
-    # total_cut_value = 0.0
-    # m = 4  # 簇数
-    
-    # # 预定义所有组合
-    # pair_masks = torch.tensor([
-    #     [1, 1, 0, 0],  # (0,1)
-    #     [1, 0, 1, 0],  # (0,2) 
-    #     [1, 0, 0, 1],  # (0,3)
-    #     [0, 1, 1, 0],  # (1,2)
-    #     [0, 1, 0, 1],  # (1,3)
-    #     [0, 0, 1, 1],  # (2,3)
-    # ], dtype=torch.float32, device=p.device)
-    
-    # triple_masks = torch.tensor([
-    #     [1, 1, 1, 0],  # (0,1,2)
-    #     [1, 1, 0, 1],  # (0,1,3)
-    #     [1, 0, 1, 1],  # (0,2,3)
-    #     [0, 1, 1, 1],  # (1,2,3)
-    # ], dtype=torch.float32, device=p.device)
-    
-    # for he_idx, he in enumerate(hyperedges):
-    #     weight = 1.0
-    #     k = len(he)
-        
-    #     he_probs = p[:, he, :]  # [batch, k, m]
-    #     batch_size = he_probs.shape[0]
-        
-    #     # 1. 计算 P(跨区数=1) - 向量化
-    #     prob_single_cluster = torch.sum(torch.prod(he_probs, dim=1), dim=1)  # [batch]
-        
-    #     # 2. 计算 P(跨区数=2) - 向量化
-    #     # 扩展维度用于广播 [6, 4] -> [batch, 6, k, 4]
-    #     pair_masks_expanded = pair_masks.view(1, 6, 1, 4).expand(batch_size, 6, k, 4)
-    #     he_probs_expanded = he_probs.unsqueeze(1).expand(batch_size, 6, k, 4)
-        
-    #     # 计算每个组合的概率 [batch, 6]
-    #     pair_probs = torch.prod(
-    #         torch.sum(he_probs_expanded * pair_masks_expanded, dim=3), 
-    #         dim=2
-    #     )
-    #     sum_2comb = torch.sum(pair_probs, dim=1)  # [batch]
-    #     prob_2_clusters = sum_2comb - 2 * prob_single_cluster
-        
-    #     # 3. 计算 P(跨区数=3) - 向量化
-    #     triple_masks_expanded = triple_masks.view(1, 4, 1, 4).expand(batch_size, 4, k, 4)
-    #     he_probs_expanded_triple = he_probs.unsqueeze(1).expand(batch_size, 4, k, 4)
-        
-    #     triple_probs = torch.prod(
-    #         torch.sum(he_probs_expanded_triple * triple_masks_expanded, dim=3), 
-    #         dim=2
-    #     )
-    #     sum_3comb = torch.sum(triple_probs, dim=1)  # [batch]
-    #     prob_3_clusters = sum_3comb - 2 * sum_2comb + 3 * prob_single_cluster
-        
-    #     # 4. 计算 P(跨区数=4)
-    #     prob_4_clusters = 1 - prob_single_cluster - prob_2_clusters - prob_3_clusters
-        
-    #     epsilon = 1e-3
-    #     prob_2 = torch.log(prob_2_clusters + epsilon)
-    #     prob_3 = torch.log(prob_3_clusters + epsilon) 
-    #     prob_4 = torch.log(prob_4_clusters + epsilon)
-
-    #     # prob_2 = torch.log(torch.sqrt(prob_2_clusters))
-    #     # prob_3 = torch.log(torch.sqrt(prob_3_clusters))
-    #     # prob_4 = torch.sqrt(prob_4_clusters) - epsilon
-        
-    #     total_cut_value += prob_2 + 2 * prob_3 + 3 * prob_4
-    
-    # print(f"Weighted Cut value: {total_cut_value}")
-    # return total_cut_value
-
-        # total_cut_value = total_cut_value + prob_2_clusters + prob_3_clusters * 2 + prob_4_clusters * 3
-        
-        # if he_idx == 0:
-        #     print(f"超边{k}: P(1簇)={prob_single_cluster[0]:.6f}, P(2簇)={prob_2_clusters[0]:.6f}, "
-        #           f"P(3簇)={prob_3_clusters[0]:.6f}, P(4簇)={prob_4_clusters[0]:.6f}, "
-        #           f"Cut期望={cut_expectation[0]:.6f}")
-    
-    # print(f"Weighted Cut value: {total_cut_value}")
-    # return total_cut_value
 
     # threshold=15
     # total_cut_value = 0.0
@@ -246,32 +143,6 @@ def expected_hyperbmincut(J, p,  hyperedges):
     # print(f"Hybrid Cut value: {total_cut_value}")
     # return total_cut_value
 
-    
-    # total_cut_value = 0.0
-    
-    # for he_idx, he in enumerate(hyperedges):
-    #     weight = 1.0
-    #     k = len(he)
-        
-    #     he_probs = p[:, he, :]  # [batch, k, num_clusters]
-    #     expected_nodes_per_cluster = torch.sum(he_probs, dim=1)
-    #     e = expected_nodes_per_cluster / k  # 归一化的期望节点数
-    #     p_used = 1 - torch.exp(-k * e)
-        
-    #     # 期望跨区数
-    #     expected_crossing = torch.sum(p_used, dim=1)
-        
-    #     # 近似方差（假设独立）
-    #     variance = torch.sum(p_used * (1 - p_used), dim=1)
-        
-    #     # 使用正态近似计算 P(跨区数 ≥ 2)
-    #     # 但更简单：cut_value = max(0, expected_crossing - 1)
-    #     cut_value = torch.relu(expected_crossing - 1) * weight
-    #     total_cut_value = total_cut_value + cut_value
-    
-    # print(f"Weighted Cut value: {total_cut_value}")
-    # return total_cut_value
-
 
     # total_cut_value = 0.0
     
@@ -304,29 +175,7 @@ def expected_hyperbmincut(J, p,  hyperedges):
     
     # print(f"Weighted Cut value: {total_cut_value}")
     # return total_cut_value
-
-    # total_cut_value = 0.0
     
-    # for he_idx, he in enumerate(hyperedges):
-    #     weight = 1.0
-    #     k = len(he)
-        
-    #     he_probs = p[:, he, :]  # [batch, k, m]
-        
-    #     # 直接计算每个簇被使用的概率
-    #     p_used = 1 - torch.prod(1 - he_probs, dim=1)  # [batch, m]
-        
-    #     # 期望跨区数
-    #     expected_crossing = torch.sum(p_used, dim=1)
-        
-    #     # 或者直接计算Kahypar cut期望
-    #     prob_single_cluster = torch.sum(torch.prod(he_probs, dim=1), dim=1)
-    #     cut_value = (1 - prob_single_cluster) * weight
-        
-    #     total_cut_value = total_cut_value + cut_value
-    
-    # print(f"Weighted Cut value: {total_cut_value}")
-    # return total_cut_value
     # total_cut_value = 0.0
     
     # for he_idx, he in enumerate(hyperedges):
@@ -403,23 +252,147 @@ def expected_hyperbmincut(J, p,  hyperedges):
     # print(f"Weighted Cut value: {total_cut_value}")
     # return total_cut_value
 
-    # total_cut_value = 0.0
+def expected_hyperbmincut_expected_nodes_temped(J, p, hyperedges):
+    total_cut_value = 0.0
+    for he_idx, he in enumerate(hyperedges):
+        weight = 1.0
+        k = len(he)
+        
+        he_probs = p[:, he, :]
+        expected_nodes_per_cluster = torch.sum(he_probs, dim=1)
+        
+        temperature = 0.1
+        weights = torch.softmax(expected_nodes_per_cluster / temperature, dim=1)
+        weighted_max = torch.sum(weights * expected_nodes_per_cluster, dim=1)
+        
+        cut_value = 1 - (weighted_max / k)
+        total_cut_value = total_cut_value + cut_value * weight
+        
+    return total_cut_value
+
+def expected_hyperbmincut_max_expected_nodes(J, p, hyperedges):
+    total_cut_value = 0.0
+
+    for he_idx, he in enumerate(hyperedges):
+        weight = 1.0
+        k = len(he)
+        
+        he_probs = p[:, he, :]  # [batch, k, num_clusters]
+        expected_nodes_per_cluster = torch.sum(he_probs, dim=1)  # [batch, m]
+        max_expected_nodes = torch.max(expected_nodes_per_cluster, dim=1)[0]
+        cut_value = 1 - (max_expected_nodes / k)
+        total_cut_value = total_cut_value + cut_value
+
+    print(f"Weighted Cut value: {total_cut_value}")
+    return total_cut_value
+
+def expected_hyperbmincut_all_comb(J, p, hyperedges):
+    total_cut_value = 0.0
+    m = 4  # 簇数
     
-    # for he_idx, he in enumerate(hyperedges):
-    #     weight = 1.0
-    #     k = len(he)
+    # 预定义所有组合
+    pair_masks = torch.tensor([
+        [1, 1, 0, 0],  # (0,1)
+        [1, 0, 1, 0],  # (0,2) 
+        [1, 0, 0, 1],  # (0,3)
+        [0, 1, 1, 0],  # (1,2)
+        [0, 1, 0, 1],  # (1,3)
+        [0, 0, 1, 1],  # (2,3)
+    ], dtype=torch.float32, device=p.device)
+    
+    triple_masks = torch.tensor([
+        [1, 1, 1, 0],  # (0,1,2)
+        [1, 1, 0, 1],  # (0,1,3)
+        [1, 0, 1, 1],  # (0,2,3)
+        [0, 1, 1, 1],  # (1,2,3)
+    ], dtype=torch.float32, device=p.device)
+    
+    for he_idx, he in enumerate(hyperedges):
+        weight = 1.0
+        k = len(he)
         
-    #     he_probs = p[:, he, :]
-    #     expected_nodes_per_cluster = torch.sum(he_probs, dim=1)
+        he_probs = p[:, he, :]  # [batch, k, m]
+        batch_size = he_probs.shape[0]
         
-    #     temperature = 0.1
-    #     weights = torch.softmax(expected_nodes_per_cluster / temperature, dim=1)
-    #     weighted_max = torch.sum(weights * expected_nodes_per_cluster, dim=1)
+        # 1. 计算 P(跨区数=1) - 向量化
+        prob_single_cluster = torch.sum(torch.prod(he_probs, dim=1), dim=1)  # [batch]
         
-    #     cut_value = 1 - (weighted_max / k)
-    #     total_cut_value = total_cut_value + cut_value * weight
+        # 2. 计算 P(跨区数=2) - 向量化
+        # 扩展维度用于广播 [6, 4] -> [batch, 6, k, 4]
+        pair_masks_expanded = pair_masks.view(1, 6, 1, 4).expand(batch_size, 6, k, 4)
+        he_probs_expanded = he_probs.unsqueeze(1).expand(batch_size, 6, k, 4)
         
+        # 计算每个组合的概率 [batch, 6]
+        pair_probs = torch.prod(
+            torch.sum(he_probs_expanded * pair_masks_expanded, dim=3), 
+            dim=2
+        )
+        sum_2comb = torch.sum(pair_probs, dim=1)  # [batch]
+        prob_2_clusters = sum_2comb - 2 * prob_single_cluster
+        
+        # 3. 计算 P(跨区数=3) - 向量化
+        triple_masks_expanded = triple_masks.view(1, 4, 1, 4).expand(batch_size, 4, k, 4)
+        he_probs_expanded_triple = he_probs.unsqueeze(1).expand(batch_size, 4, k, 4)
+        
+        triple_probs = torch.prod(
+            torch.sum(he_probs_expanded_triple * triple_masks_expanded, dim=3), 
+            dim=2
+        )
+        sum_3comb = torch.sum(triple_probs, dim=1)  # [batch]
+        prob_3_clusters = sum_3comb - 2 * sum_2comb + 3 * prob_single_cluster
+        
+        # 4. 计算 P(跨区数=4)
+        prob_4_clusters = 1 - prob_single_cluster - prob_2_clusters - prob_3_clusters
+        
+        epsilon = 1e-3
+        prob_2 = torch.log(prob_2_clusters + epsilon)
+        prob_3 = torch.log(prob_3_clusters + epsilon) 
+        prob_4 = torch.log(prob_4_clusters + epsilon)
+
+        # prob_2 = torch.log(torch.sqrt(prob_2_clusters))
+        # prob_3 = torch.log(torch.sqrt(prob_3_clusters))
+        # prob_4 = torch.sqrt(prob_4_clusters) - epsilon
+        
+        total_cut_value += prob_2 + 2 * prob_3 + 3 * prob_4
+    
+    print(f"Weighted Cut value: {total_cut_value}")
+    return total_cut_value
+
+        # total_cut_value = total_cut_value + prob_2_clusters + prob_3_clusters * 2 + prob_4_clusters * 3
+        
+        # if he_idx == 0:
+        #     print(f"超边{k}: P(1簇)={prob_single_cluster[0]:.6f}, P(2簇)={prob_2_clusters[0]:.6f}, "
+        #           f"P(3簇)={prob_3_clusters[0]:.6f}, P(4簇)={prob_4_clusters[0]:.6f}, "
+        #           f"Cut期望={cut_expectation[0]:.6f}")
+    
+    # print(f"Weighted Cut value: {total_cut_value}")
     # return total_cut_value
+
+def expected_hyperbmincut_expected_crossing_simplified(J, p, hyperedges):
+    total_cut_value = 0.0
+    
+    for he_idx, he in enumerate(hyperedges):
+        weight = 1.0
+        k = len(he)
+        
+        he_probs = p[:, he, :]  # [batch, k, num_clusters]
+        expected_nodes_per_cluster = torch.sum(he_probs, dim=1)
+        e = expected_nodes_per_cluster / k  # 归一化的期望节点数
+        p_used = 1 - torch.exp(-k * e)
+        
+        # 期望跨区数
+        expected_crossing = torch.sum(p_used, dim=1)
+        
+        # 近似方差（假设独立）
+        variance = torch.sum(p_used * (1 - p_used), dim=1)
+        
+        # 使用正态近似计算 P(跨区数 ≥ 2)
+        # 但更简单：cut_value = max(0, expected_crossing - 1)
+        cut_value = torch.relu(expected_crossing - 1) * weight
+        total_cut_value = total_cut_value + cut_value
+    
+    print(f"Weighted Cut value: {total_cut_value}")
+    return total_cut_value
 
 def manual_grad_hyperbmincut(J, p, U_max, L_min, n, h, imbalance_weight, q):
     
@@ -447,3 +420,11 @@ def manual_grad_hyperbmincut(J, p, U_max, L_min, n, h, imbalance_weight, q):
     
     return total_grad
 
+# elif self.problem_type == 'hyperbmincut':
+#     # print(f"expected_hyperbmincut: {expected_hyperbmincut(self.coupling_matrix, p)}")
+#     # print(f"Balance loss: {self.imbalance_weight * balance_constrain_1(p, self.U_max, self.L_min)}")
+#     # factor = (step_max - step )/ step_max
+#     # rev_factor = ( step )/ step_max
+#     expect_loss = expected_hyperbmincut(self.coupling_matrix, p, self.hyperedge)
+#     balance_loss = self.imbalance_weight * balance_constrain(self.coupling_matrix, p, self.U_max, self.L_min)
+#     return expect_loss, balance_loss

@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as Func
 from .customized_problem.fpga_placement import *
-from .customized_problem.hypermincut import *
+from .customized_problem.hyper_bmincut import *
 
 def infer_qubo(J, p):
     """
@@ -171,8 +171,6 @@ class OptimizationProblem:
 # **********************************   Start   *********************************** # 
         self.fpga_wrapper = fpga_wrapper                                    # rapidwright design object
         self.io_site_connect_matrix = io_site_connect_matrix                # IO site connectivity matrix
-        self.site_coords_matrix = None                                      # store site coordinates matrix
-        self.net_sites_tensor = fpga_wrapper.net_to_slice_sites_tensor      # Net to slice sites mapping tensor
 # **********************************    End    *********************************** # 
 
         self.discretization = discretization
@@ -212,7 +210,8 @@ class OptimizationProblem:
             self.coupling_matrix = self.coupling_matrix.repeat(1, num_trials, 1, 1)
 
 # **********************************   Start   *********************************** # 
-        if self.problem_type == 'fpga_placement':
+        if self.problem_type == 'fpga_placement':                                   # store site coordinates matrix
+            self.net_sites_tensor = self.fpga_wrapper.net_to_slice_sites_tensor      # Net to slice sites mapping tensor
             self.bbox_length = self.fpga_wrapper.bbox['area_length']          # FPGA layout boundary size 
             self.site_coords_matrix = get_site_coords_all(self.fpga_wrapper.num_of_sites, self.bbox_length) # All site coordinates matrix
             self.best_hpwl = torch.full((10,), float('inf'))        # Track best HPWL history
@@ -238,7 +237,7 @@ class OptimizationProblem:
             # rev_factor = ( step )/ step_max
             expect_loss = expected_hyperbmincut(self.coupling_matrix, p, self.hyperedge)
             balance_loss = self.imbalance_weight * balance_constrain(self.coupling_matrix, p, self.U_max, self.L_min)
-            return expect_loss, balance_loss
+            return expect_loss + balance_loss
         elif self.problem_type == 'modularity':
             return -expected_inner_weight(self.coupling_matrix, p) + \
                 expected_inner_weight_configmodel(self.coupling_matrix, p)
@@ -289,7 +288,7 @@ class OptimizationProblem:
         elif self.problem_type == 'bmincut':
             config, result = infer_bmincut(self.coupling_matrix, p)
         elif self.problem_type == 'hyperbmincut':
-            config, result = infer_hyperbmincut(self.coupling_matrix, p)
+            config, result = infer_hyperbmincut(self.coupling_matrix, p, self.hyperedge)
         elif self.problem_type == 'vertexcover':
             config, result = infer_qubo(self.coupling_matrix, p)
         elif self.problem_type == 'maxksat':

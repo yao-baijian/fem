@@ -80,6 +80,7 @@ def get_hpwl_loss(J, p, site_coords_matrix):
     total_wirelength = torch.sum(weighted_dist_triu, dim=1)  # [batch_size]
     return total_wirelength
 
+# use LSE model to estimate wire length
 def get_hpwl_loss_from_net_tensor_lse(p, net_tensor, site_coords_matrix, gamma=0.1):
     batch_size, num_instances, num_sites = p.shape
     num_nets = net_tensor.shape[0]
@@ -129,6 +130,52 @@ def get_hpwl_loss_from_net_tensor_lse(p, net_tensor, site_coords_matrix, gamma=0
     # site_usage = torch.sum(p, dim=1)
     # log_penalty = torch.sum(torch.log1p(Func.relu(site_usage - num_instance / num_sites)), dim=1)
     # return log_penalty
+
+# use WA model to estimate wire length
+def get_hpwl_loss_from_net_tensor_wa_vectorized(p, net_tensor, site_coords_matrix, gamma=0.1):
+    """
+    向量化版本的WA wirelength model计算HPWL loss
+    """
+    batch_size, num_instances, num_sites = p.shape
+    num_nets = net_tensor.shape[0]
+    
+    # 计算期望坐标
+    expected_coords = torch.matmul(p, site_coords_matrix)  # [batch_size, num_instances, 2]
+    expected_x = expected_coords[..., 0]  # [batch_size, num_instances]
+    expected_y = expected_coords[..., 1]  # [batch_size, num_instances]
+    
+    # 扩展用于批量计算
+    net_tensor_expanded = net_tensor.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, num_nets, num_instances]
+    
+    total_hpwl = torch.zeros(batch_size, device=p.device)
+    
+    for coord_tensor in [expected_x, expected_y]:
+        # 扩展坐标张量以匹配网络维度
+        coord_expanded = coord_tensor.unsqueeze(1).expand(-1, num_nets, -1)  # [batch_size, num_nets, num_instances]
+        
+        # 计算正方向的加权平均
+        weight_pos = torch.exp(coord_expanded / gamma)
+        numerator_pos = torch.sum(coord_expanded * weight_pos * net_tensor_expanded, dim=2)
+        denominator_pos = torch.sum(weight_pos * net_tensor_expanded, dim=2)
+        
+        # 计算负方向的加权平均
+        weight_neg = torch.exp(-coord_expanded / gamma)
+        numerator_neg = torch.sum(coord_expanded * weight_neg * net_tensor_expanded, dim=2)
+        denominator_neg = torch.sum(weight_neg * net_tensor_expanded, dim=2)
+        
+        # 避免除零错误
+        denominator_pos = torch.where(denominator_pos == 0, torch.tensor(1e-10, device=p.device), denominator_pos)
+        denominator_neg = torch.where(denominator_neg == 0, torch.tensor(1e-10, device=p.device), denominator_neg)
+        
+        # 计算加权平均值
+        weighted_avg_pos = numerator_pos / denominator_pos
+        weighted_avg_neg = numerator_neg / denominator_neg
+        
+        # 当前坐标方向的wirelength并累加
+        coord_wirelength = weighted_avg_pos - weighted_avg_neg
+        total_hpwl += torch.sum(coord_wirelength, dim=1)
+    
+    return total_hpwl
 
 def get_hpwl_loss_xy_simple(J, p_x, p_y):
     
@@ -382,7 +429,7 @@ def expected_fpga_placement(J, p, io_site_connect_matrix, site_coords_matrix, ne
     
     # total_energy += hpwl_weight *  hpwl_loss + constrain_weight * constrain_loss
     
-    return hpwl_weight * current_hpwl, constrain_weight * constrain_loss
+    return hpwl_weight * current_hpwl + constrain_weight * constrain_loss
 
 def expected_fpga_placement_xy(J, p_x, p_y):
     hpwl_weight, constrain_weight = 1, 1

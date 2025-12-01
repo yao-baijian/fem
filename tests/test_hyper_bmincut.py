@@ -12,10 +12,10 @@ from utils import *
 
 num_trials = 10
 num_steps = 500
-dev = 'cuda' # if you do not have gpu in your computing devices, then choose 'cpu' here
+dev = 'cpu' # if you do not have gpu in your computing devices, then choose 'cpu' here
 
 case_type = 'hyperbmincut'
-instance_root_dir = '../partition/data/hypergraph_set/'
+instance_root_dir = '../../partition/data/hypergraph_set/'
 
 # instance_root_dir = './tests/test_instances/'
 
@@ -50,8 +50,9 @@ for instance in instance_list:
             for grad_type in grad_options:
                 for q in q_values:
                     current_experiment += 1
+                    fpga_wrapper = None
                     print(f"Progress: {current_experiment}/{total_experiments} ({current_experiment/total_experiments*100:.1f}%)")
-                    case_bmincut = FEM.from_file(case_type, instance_root_dir + instance, index_start=1, epsilon=epsilon, q=q, hyperedges = hyperedges, map_type=map_type)
+                    case_bmincut = FEM.from_file(case_type, instance_root_dir + instance, fpga_wrapper, index_start=1, epsilon=epsilon, q=q, hyperedges = hyperedges, map_type=map_type)
                     case_bmincut.set_up_solver(num_trials, num_steps, optimizer='adam', learning_rate=0.2, dev=dev, q=q, manual_grad= grad_type)
                     config, result = case_bmincut.solve()
                     optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
