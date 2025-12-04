@@ -8,13 +8,13 @@ This package provides FPGA placement functionality as an **independent extension
 
 1. **Clean Separation**: FEM framework remains completely unmodified
 2. **Use Customize Interface**: Leverage FEM's built-in extensibility mechanism
-3. **Independent Package**: All FPGA logic is self-contained in `fpga_placement/`
+3. **Independent Package**: All FPGA logic is self-contained in `src/`
 4. **Easy Maintenance**: Can easily sync with upstream FEM updates
 
 ### Directory Structure
 
 ```
-fpga_placement/
+src/
 ├── __init__.py           # Package exports
 ├── placer.py             # FpgaPlacer class (RapidWright interface)
 ├── objectives.py         # FPGA-specific objective functions (HPWL, constraints)
@@ -30,12 +30,12 @@ fpga_placement/
 
 ```python
 from FEM import FEM
-from fpga_placement import (
+from fem_placer import (
     FpgaPlacer,
     expected_fpga_placement_xy,
     infer_placements_xy
 )
-from fpga_placement.utils import parse_fpga_design
+from fem_placer.utils import parse_fpga_design
 
 # Initialize FPGA placer
 fpga_wrapper = FpgaPlacer()
@@ -98,14 +98,14 @@ This allows efficient modeling of 2D placement space.
 ## Comparison with Previous Approach
 
 ### ❌ Old Approach (Invasive)
-- Added `fpga_placement` as a new problem type in FEM core
+- Added `fem_placer` as a new problem type in FEM core
 - Modified `problem.py`, `solver_fem.py`, `interface.py` with special cases
 - Tightly coupled FPGA logic with FEM internals
 - Difficult to sync with upstream FEM updates
 
 ### ✅ New Approach (Clean)
 - Use FEM's `customize` interface (already exists!)
-- All FPGA code in separate `fpga_placement/` package
+- All FPGA code in separate `fem_placer/` package
 - Zero modifications to FEM core files
 - Easy to maintain and extend
 

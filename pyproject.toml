@@ -1,66 +1,36 @@
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fpga-placement"
+name = "FPGA-Placement-FEM"
 version = "0.1.0"
-description = "FPGA Placement using FEM (Field Effect Method) framework"
+description = "FPGA placement toolkit based on Free Energy Minimization (FEM) framework"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+requires-python = ">=3.9"
+
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
-]
-keywords = ["fpga", "placement", "optimization", "field-effect-method"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Topic :: Scientific/Engineering",
+  { name = "author name" }
 ]
 
 dependencies = [
-    "torch>=2.0.0",
-    "numpy>=1.20.0",
-    "scipy>=1.7.0",
-    "matplotlib>=3.3.0",
-    "pandas>=1.3.0",
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "rapidwright>=2025.2.0",
+  "pandas>=2.3.3",
 ]
 
 [project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+gpu = ["torch", "torchvision", "torchaudio"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fem_placer*"]
+
+[dependency-groups]
 dev = [
-    "pytest>=7.0.0",
-    "black>=22.0.0",
-    "flake8>=4.0.0",
-    "mypy>=0.950",
-]
-rapidwright = [
-    "rapidwright>=2023.1.0",
+    "pytest>=8.4.2",
 ]
 
-[project.urls]
-Homepage = "https://github.com/yourusername/fpga-placement"
-Repository = "https://github.com/yourusername/fpga-placement"
-Documentation = "https://github.com/yourusername/fpga-placement#readme"
-
-[tool.setuptools]
-packages = ["fpga_placement"]
-
-[tool.setuptools.package-data]
-fpga_placement = ["*.md"]
-
-[tool.black]
-line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
-
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false

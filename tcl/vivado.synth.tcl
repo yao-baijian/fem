@@ -1,15 +1,15 @@
 # 设置项目参数
-# set rtl_file /home/byao/Desktop/Benchmarks/ISCAS85/c1355/c1355.v
+# set rtl_file ../benchmarks/ISCAS85/c1355/c1355.v
 # set top_module {c1355}
 # set part_name {xcvu065-ffvc1517-1-i}
 # set output_dir {output_dir}
 
-# set rtl_file /home/byao/Desktop/Benchmarks/ISCAS85/c1908/c1908.v
+# set rtl_file ../benchmarks/ISCAS85/c1908/c1908.v
 # set top_module {c1908}
 # set part_name {xcvu065-ffvc1517-1-i}
 # set output_dir {output_dir}
 
-set rtl_file /home/byao/Desktop/Benchmarks/ISCAS89/s15850.v
+set rtl_file ../benchmarks/ISCAS89/s15850.v
 set top_module {s15850}
 set part_name {xcvu065-ffvc1517-1-i}
 set output_dir {output_dir}

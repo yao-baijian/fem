@@ -1,6 +1,4 @@
-import sys
-sys.path.append('.')
-from utils import *
+from .utils import *
 import random
 import rapidwright
 import torch

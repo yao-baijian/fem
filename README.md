@@ -13,10 +13,10 @@ A clean, modular FPGA placement tool built on top of the [FEM (Field Effect Meth
 ## 📦 Project Structure
 
 ```
-fpga-placement/
+FPGA-Placement-FEM/
 ├── external/
 │   └── FEM/  (git submodule)     # Original FEM framework
-├── fpga_placement/                # Our FPGA placement package
+├── fem_placer/             # Our FPGA placement package
 │   ├── __init__.py
 │   ├── placer.py                 # RapidWright interface
 │   ├── objectives.py             # HPWL and constraint functions
@@ -25,7 +25,7 @@ fpga-placement/
 │   ├── router.py                 # Connection routing
 │   └── utils.py                  # Utility functions
 ├── tests/
-│   └── test_fpga_placement_refactored.py
+│   └── test_fpga_placement.py
 ├── tcl/                          # Vivado TCL scripts
 ├── pyproject.toml                # Modern Python package config
 ├── requirements.txt              # Dependencies
@@ -49,19 +49,32 @@ git submodule update --init --recursive
 
 ### 2. Install Dependencies
 
-**Option A: Using pip**
+**Option A: Using uv (recommended - fast and modern)**
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment and install dependencies
+uv sync
+
+# Activate the virtual environment
+source .venv/bin/activate  # On macOS/Linux
+# or
+.venv\Scripts\activate  # On Windows
+
+# Install optional dependencies
+uv pip install rapidwright  # For FPGA design handling
+```
+
+**Option B: Using pip (traditional)**
 ```bash
 pip install -r requirements.txt
 pip install rapidwright  # For FPGA design handling
 ```
 
-**Option B: Development mode (recommended)**
+**Option C: Development mode with pip**
 ```bash
 pip install -e .
-```
-
-**Option C: With all dev tools**
-```bash
 pip install -e ".[dev,rapidwright]"
 ```
 
@@ -79,7 +92,7 @@ import sys
 sys.path.insert(0, 'external')  # Add FEM to path
 
 from FEM import FEM
-from fpga_placement import (
+from fem_placer import (
     FpgaPlacer,
     PlacementDrawer,
     Legalizer,
@@ -87,7 +100,7 @@ from fpga_placement import (
     expected_fpga_placement_xy,
     infer_placements_xy
 )
-from fpga_placement.utils import parse_fpga_design
+from fem_placer.utils import parse_fpga_design
 
 # Initialize FPGA placer
 fpga_wrapper = FpgaPlacer()
