@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as Func
-from .customized_problem.fpga_placement import *
 from .customized_problem.hyper_bmincut import *
 
 def infer_qubo(J, p):
@@ -144,16 +143,14 @@ class OptimizationProblem:
     Optimization problem class
     """
     def __init__(
-            self, 
+            self,
             num_nodes, num_interactions,
-            coupling_matrix, 
-            problem_type, 
-            imbalance_weight=5.0, 
+            coupling_matrix,
+            problem_type,
+            imbalance_weight=5.0,
             epsilon=0.03,
             q=2,
-            io_site_connect_matrix=None,
             hyperedge=None,
-            fpga_wrapper=None,
             discretization=False,
             customize_expected_func=None,
             customize_grad_func=None,
@@ -167,12 +164,6 @@ class OptimizationProblem:
         self.epsilon = epsilon
         self.q = q
         self.hyperedge = hyperedge
-
-# **********************************   Start   *********************************** # 
-        self.fpga_wrapper = fpga_wrapper                                    # rapidwright design object
-        self.io_site_connect_matrix = io_site_connect_matrix                # IO site connectivity matrix
-# **********************************    End    *********************************** # 
-
         self.discretization = discretization
         self.constant = 0
         self.customize_expected_func = customize_expected_func
@@ -209,15 +200,6 @@ class OptimizationProblem:
         if self.problem_type == 'maxksat':
             self.coupling_matrix = self.coupling_matrix.repeat(1, num_trials, 1, 1)
 
-# **********************************   Start   *********************************** # 
-        if self.problem_type == 'fpga_placement':                                   # store site coordinates matrix
-            self.net_sites_tensor = self.fpga_wrapper.net_to_slice_sites_tensor      # Net to slice sites mapping tensor
-            self.bbox_length = self.fpga_wrapper.bbox['area_length']          # FPGA layout boundary size 
-            self.site_coords_matrix = get_site_coords_all(self.fpga_wrapper.num_of_sites, self.bbox_length) # All site coordinates matrix
-            self.best_hpwl = torch.full((10,), float('inf'))        # Track best HPWL history
-            return
-# **********************************    End   ************************************ #
-        
         if sparse:
             self.coupling_matrix = self.coupling_matrix.to_sparse()
 
@@ -245,13 +227,7 @@ class OptimizationProblem:
             return expected_qubo(self.coupling_matrix, p)
         elif self.problem_type == 'maxksat':
             return expected_maxksat(self.coupling_matrix, p.unsqueeze(0))
-        
-# **********************************   Start   *********************************** #
-        elif self.problem_type == 'fpga_placement':
-            return expected_fpga_placement_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            # return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.net_sites_tensor, self.best_hpwl)
-# **********************************    End    *********************************** #
-          
+
         elif self.problem_type == 'customize':
             return self.customize_expected_func(self.coupling_matrix, p)
     
@@ -271,18 +247,12 @@ class OptimizationProblem:
         elif self.problem_type == 'maxksat':
             return manual_grad_maxksat(self.coupling_matrix, p.unsqueeze(0)).squeeze(0)
 
-# **********************************   Start   *********************************** #
-        elif self.problem_type == 'fpga_placement':
-            return
-# **********************************    END    *********************************** #
-
         elif self.problem_type == 'customize':
             return self.customize_grad_func(self.coupling_matrix, p)
             
     
     def inference_value(self, p):
-        if (self.problem_type != 'fpga_placement'):
-            p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0])
+        p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0])
         if self.problem_type == 'maxcut':
             config, result = infer_maxcut(self.coupling_matrix, p)
         elif self.problem_type == 'bmincut':
@@ -293,12 +263,6 @@ class OptimizationProblem:
             config, result = infer_qubo(self.coupling_matrix, p)
         elif self.problem_type == 'maxksat':
             config, result = infer_maxksat(self.coupling_matrix, p.unsqueeze(0))
-
-# **********************************   Start   *********************************** #
-        elif self.problem_type == 'fpga_placement':
-            config, result = infer_placements_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            # config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
-# **********************************    END    *********************************** #
 
         elif self.problem_type == 'customize':
             return self.customize_infer_func(self.coupling_matrix, p)
