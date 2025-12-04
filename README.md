@@ -1,49 +1,203 @@
-# FEM
+# FPGA Placement using FEM Framework
 
-`FEM` is a python library for solving various combinatorial optimization problems
-using gradient based mean-field annealing. The current build-in problem types are:
-* maximum cut
-* balance minimum cut
-* maximum k-satisfactory
-* vertex cover
-* qubo-like instances
-Some examples can be found on [example notebook](examples/build_in.ipynb).
+A clean, modular FPGA placement tool built on top of the [FEM (Field Effect Method)](https://github.com/Fanerst/FEM) optimization framework.
 
-You can also use `FEM` to solve your own optimization problems as long as 
-the expectation value of the target function can be written as some function of 
-the marginal probability. Please refer to the [customize examples](examples/customize.ipynb) 
-for further details.
+## 🎯 Key Features
 
-You can run the jupyter notebooks in [benchmarks](/benchmarks) to reproduce the main results presented in the paper.
+- **Clean Architecture**: FEM framework as external dependency (git submodule)
+- **Extensible Design**: Uses FEM's `customize` interface - no core modifications
+- **Standard Python Package**: Modern `pyproject.toml` configuration
+- **FPGA-Specific**: Optimized objectives (HPWL, timing) and constraints
+- **Complete Pipeline**: Placement → Legalization → Routing → Visualization
 
+## 📦 Project Structure
 
-## Installation
+```
+fpga-placement/
+├── external/
+│   └── FEM/  (git submodule)     # Original FEM framework
+├── fpga_placement/                # Our FPGA placement package
+│   ├── __init__.py
+│   ├── placer.py                 # RapidWright interface
+│   ├── objectives.py             # HPWL and constraint functions
+│   ├── drawer.py                 # Visualization tools
+│   ├── legalizer.py              # Placement legalization
+│   ├── router.py                 # Connection routing
+│   └── utils.py                  # Utility functions
+├── tests/
+│   └── test_fpga_placement_refactored.py
+├── tcl/                          # Vivado TCL scripts
+├── pyproject.toml                # Modern Python package config
+├── requirements.txt              # Dependencies
+└── README.md
+```
 
-1. One can use conda to install the package with the following commands:
-    ```bash
-    conda env create -f environment.yml
-    ```
-    this will create an environment named `fem` with all the dependencies except for the pytorch, then activate the environment with `conda activate fem`.
+## 🚀 Installation
 
-2. Then `pytorch` have to be installed manually with 
-    ```bash
-    pip3 install torch torchvision torchaudio
-    ```
-    see the [pytorch website](https://pytorch.org/) for more details.
+### 1. Clone with Submodules
 
-3. `rapidwright` can be installed manually with 
+```bash
+git clone --recursive https://github.com/yourusername/fpga-placement.git
+cd fpga-placement
+```
 
-    ```bash
-    pip install rapidwright
-    ```
+If you forgot `--recursive`:
 
-    see the [rapidwright website](https://www.rapidwright.io/docs/Install_RapidWright_as_a_Python_PIP_Package.html) for more details.
+```bash
+git submodule update --init --recursive
+```
 
+### 2. Install Dependencies
 
-## Placement run
+**Option A: Using pip**
+```bash
+pip install -r requirements.txt
+pip install rapidwright  # For FPGA design handling
+```
 
-To run FPGA placement, there has to be `VIVADO` installed. Because `rapidwright` needs to call `VIVADO` for design file unpack
+**Option B: Development mode (recommended)**
+```bash
+pip install -e .
+```
 
-Basic of FPGA, see https://www.rapidwright.io/docs/FPGA_Architecture.html
+**Option C: With all dev tools**
+```bash
+pip install -e ".[dev,rapidwright]"
+```
 
-Basic of FPGA placement, see https://www.rapidwright.io/docs/Xilinx_Architecture.html
+### 3. Add FEM to Python Path
+
+The package automatically handles FEM imports from `external/FEM`.
+
+## 📖 Usage
+
+### Basic Example
+
+```python
+import torch
+import sys
+sys.path.insert(0, 'external')  # Add FEM to path
+
+from FEM import FEM
+from fpga_placement import (
+    FpgaPlacer,
+    PlacementDrawer,
+    Legalizer,
+    Router,
+    expected_fpga_placement_xy,
+    infer_placements_xy
+)
+from fpga_placement.utils import parse_fpga_design
+
+# Initialize FPGA placer
+fpga_wrapper = FpgaPlacer()
+fpga_wrapper.init_placement('./design.dcp', 'output.dcp')
+
+# Parse design
+num_inst, num_site, J, J_extend = parse_fpga_design(fpga_wrapper)
+
+# Define customize functions for FEM
+def customize_expected_func(coupling_matrix, p_list):
+    p_x, p_y = p_list
+    return expected_fpga_placement_xy(coupling_matrix, p_x, p_y)
+
+def customize_infer_func(coupling_matrix, p_list):
+    p_x, p_y = p_list
+    return infer_placements_xy(coupling_matrix, p_x, p_y)
+
+# Create FEM problem using customize interface
+case_placements = FEM.from_couplings(
+    'customize',  # Use FEM's customize type
+    num_inst,
+    num_inst * (num_inst - 1) // 2,
+    J,
+    customize_expected_func=customize_expected_func,
+    customize_infer_func=customize_infer_func
+)
+
+# Solve
+case_placements.set_up_solver(num_trials=10, num_steps=1000, dev='cpu')
+config, result = case_placements.solve()
+
+# Legalize and route
+legalizer = Legalizer(fpga_wrapper.bbox)
+placement = legalizer.legalize_placement(config[0])
+```
+
+### Run Tests
+
+```bash
+python tests/test_fpga_placement_refactored.py
+```
+
+## 🔄 Updating FEM
+
+To update FEM to the latest version:
+
+```bash
+cd external/FEM
+git pull origin main
+cd ../..
+git add external/FEM
+git commit -m "Update FEM to latest version"
+```
+
+## 📐 Architecture
+
+### Why This Design?
+
+1. **FEM as Submodule**: Keeps FEM code separate, easy to update from upstream
+2. **Customize Interface**: Uses FEM's built-in extensibility - no modifications needed
+3. **Standard Package**: Follows Python packaging best practices
+4. **Modular**: Each component (placer, legalizer, router) is independent
+
+### Key Components
+
+- **FpgaPlacer**: Interfaces with RapidWright for FPGA design handling
+- **Objectives**: HPWL calculation, constraint functions
+- **Legalizer**: Resolves overlaps, snaps to valid sites
+- **Router**: Computes wire paths for visualization
+- **Drawer**: Matplotlib-based visualization
+
+## 🆚 Comparison with Direct Copy
+
+| Aspect | Old (Direct Copy) | New (Submodule) |
+|--------|------------------|-----------------|
+| FEM Updates | Manual merge | `git submodule update` |
+| Code Ownership | Unclear | Crystal clear |
+| Modifications | Mixed with FEM | Separate package |
+| Maintenance | Difficult | Easy |
+| Distribution | Bloated | Clean |
+
+## 📝 Development
+
+### Project Goals
+
+This project demonstrates how to:
+- Build domain-specific tools on top of general frameworks
+- Use git submodules for dependency management
+- Follow Python packaging best practices
+- Maintain clean code boundaries
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📚 References
+
+- [FEM Framework](https://github.com/Fanerst/FEM)
+- [RapidWright](https://www.rapidwright.io/)
+- [Python Packaging Guide](https://packaging.python.org/)
+
+## 📄 License
+
+MIT License - see LICENSE file for details
+
+## 🙏 Acknowledgments
+
+- FEM framework by [Fanerst](https://github.com/Fanerst/FEM)
+- RapidWright by Xilinx Research Labs
