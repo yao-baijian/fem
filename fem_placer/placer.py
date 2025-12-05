@@ -3,6 +3,7 @@ import random
 import rapidwright
 import torch
 from enum import Enum
+import numpy as np
 
 class PlaceType(Enum):
     CENTERED = 1

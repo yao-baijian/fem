@@ -1,16 +1,13 @@
 import sys
 sys.path.insert(0, '.')
-sys.path.insert(0, 'external')
 
 import torch
-from FEM import FEM
 from fem_placer import (
     FpgaPlacer,
     PlacementDrawer,
     Legalizer,
     Router,
-    expected_fpga_placement_xy,
-    infer_placements_xy
+    FPGAPlacementOptimizer
 )
 from fem_placer.utils import parse_fpga_design
 
@@ -34,67 +31,25 @@ print(f"INFO: Number of instances: {num_inst}")
 print(f"INFO: Number of sites: {num_site}")
 print(f"INFO: Area length: {area_length}")
 
-
-# Define customize functions for FEM
-def customize_expected_func(coupling_matrix, p_list):
-    """
-    Custom expectation function for FPGA placement
-
-    Args:
-        coupling_matrix: Instance connectivity matrix (not used directly here)
-        p_list: [p_x, p_y] - probability distributions for X and Y coordinates
-
-    Returns:
-        Total loss (HPWL + constraints)
-    """
-    p_x, p_y = p_list
-    return expected_fpga_placement_xy(coupling_matrix, p_x, p_y)
-
-
-def customize_infer_func(coupling_matrix, p_list):
-    """
-    Custom inference function for FPGA placement
-
-    Args:
-        coupling_matrix: Instance connectivity matrix
-        p_list: [p_x, p_y] - probability distributions
-
-    Returns:
-        config: Inferred placement coordinates
-        result: HPWL value
-    """
-    p_x, p_y = p_list
-    return infer_placements_xy(coupling_matrix, p_x, p_y)
-
-
-# Create FEM problem using customize interface
-# Note: We use 'customize' instead of adding a new problem type to FEM
-case_placements = FEM.from_couplings(
-    'customize',  # Use FEM's customize interface
-    num_inst,
-    num_inst * (num_inst - 1) // 2,  # num_interactions
-    J,  # coupling matrix
-    customize_expected_func=customize_expected_func,
-    customize_infer_func=customize_infer_func
-)
-
 # Set up visualization
 global_drawer = PlacementDrawer(bbox=fpga_wrapper.bbox)
 
-# Set up solver
-# Note: q parameter represents grid dimensions for each coordinate
-case_placements.set_up_solver(
-    num_trials,
-    num_steps,
-    dev=dev,
-    q=area_length,  # Grid size for each coordinate dimension
-    manual_grad=False,
-    drawer=global_drawer
+# Create FPGA placement optimizer with visualization support
+optimizer = FPGAPlacementOptimizer(
+    num_inst=num_inst,
+    coupling_matrix=J,
+    drawer=global_drawer,
+    visualization_steps=[0, 250, 500, 750, 999]
 )
 
 # Solve
 print("INFO: Starting FEM optimization...")
-config, result = case_placements.solve()
+config, result = optimizer.optimize(
+    num_trials=num_trials,
+    num_steps=num_steps,
+    dev=dev,
+    q=area_length  # Grid size for each coordinate dimension
+)
 
 # Find optimal solution
 optimal_inds = torch.argwhere(result == result.min()).reshape(-1)

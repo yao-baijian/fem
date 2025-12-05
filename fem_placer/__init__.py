@@ -9,6 +9,7 @@ from .placer import FpgaPlacer
 from .drawer import PlacementDrawer
 from .legalizer import Legalizer
 from .router import Router
+from .optimizer import FPGAPlacementOptimizer
 from .objectives import (
     expected_fpga_placement_xy,
     infer_placements_xy,
@@ -21,6 +22,7 @@ __all__ = [
     'PlacementDrawer',
     'Legalizer',
     'Router',
+    'FPGAPlacementOptimizer',
     'expected_fpga_placement_xy',
     'infer_placements_xy',
     'get_hpwl_loss_xy_simple',
