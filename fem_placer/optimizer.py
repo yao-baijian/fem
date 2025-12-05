@@ -1,18 +1,7 @@
-"""
-FPGA Placement Optimizer with Visualization Support
-
-This module provides a clean interface for FPGA placement optimization
-using FEM principles, with built-in visualization support.
-
-The optimizer implements a custom FEM iteration loop specifically designed
-for FPGA placement, which requires separate probability distributions for
-X and Y coordinates.
-"""
-
 import torch
 from math import log
 from typing import Optional, List, Tuple
-from .objectives import expected_fpga_placement_xy, infer_placements_xy
+from .objectives import expected_fpga_placement_joint, infer_placements_joint
 from .drawer import PlacementDrawer
 
 
@@ -29,44 +18,49 @@ def entropy_q(p):
     return -(p * torch.log(p + 1e-10)).sum(2).sum(1)
 
 
-def get_site_coordinates_from_px_py(p_x: torch.Tensor, p_y: torch.Tensor) -> torch.Tensor:
+def get_site_coordinates_from_p_joint(p: torch.Tensor, grid_width: int) -> torch.Tensor:
     """
-    Convert probability distributions to site coordinates.
+    Convert joint probability distribution to site coordinates.
 
     Args:
-        p_x: Probability distribution over X coordinates [num_trials, num_nodes, q]
-        p_y: Probability distribution over Y coordinates [num_trials, num_nodes, q]
+        p: Joint probability distribution [num_trials, num_nodes, grid_width * grid_height]
+        grid_width: Width of the grid
 
     Returns:
         Coordinates tensor [num_trials, num_nodes, 2]
     """
-    num_trials, num_nodes, q = p_x.shape
+    num_trials, num_nodes, num_positions = p.shape
 
-    # Get expected coordinates for each site
-    coords_x = torch.sum(p_x * torch.arange(q, device=p_x.device).view(1, 1, -1), dim=2)
-    coords_y = torch.sum(p_y * torch.arange(q, device=p_y.device).view(1, 1, -1), dim=2)
+    # Get position with highest probability for each node
+    position_indices = torch.argmax(p, dim=2)  # [num_trials, num_nodes]
+
+    # Convert flattened position index to (x, y) coordinates
+    x_coords = position_indices % grid_width
+    y_coords = position_indices // grid_width
 
     # Stack into coordinate tensor
-    coords = torch.stack([coords_x, coords_y], dim=2)
+    coords = torch.stack([x_coords, y_coords], dim=2)
 
-    return coords
+    return coords.float()
 
 
-class FPGAPlacementOptimizer:
+class FPGAPlacementOptimizerJoint:
     """
-    FPGA Placement optimizer using FEM principles with visualization support.
+    FPGA Placement optimizer using joint XY probability distribution.
 
-    This optimizer implements a custom FEM-based iteration loop specifically
-    designed for FPGA placement. It maintains separate probability distributions
-    for X and Y coordinates and supports real-time visualization.
+    This is a simpler, more direct approach compared to the separate XY version.
+    It uses a single probability distribution over all 2D grid positions.
 
     Example:
-        >>> optimizer = FPGAPlacementOptimizer(
+        >>> optimizer = FPGAPlacementOptimizerJoint(
         ...     num_inst, J, drawer=global_drawer,
         ...     visualization_steps=[0, 250, 500, 750, 999]
         ... )
         >>> config, result = optimizer.optimize(
-        ...     num_trials=10, num_steps=1000, q=area_length
+        ...     num_trials=10, 
+        ...     num_steps=1000, 
+        ...     grid_width=50, 
+        ...     grid_height=50
         ... )
     """
 
@@ -75,7 +69,8 @@ class FPGAPlacementOptimizer:
             num_inst: int,
             coupling_matrix: torch.Tensor,
             drawer: Optional[PlacementDrawer] = None,
-            visualization_steps: Optional[List[int]] = None
+            visualization_steps: Optional[List[int]] = None,
+            constraint_weight: float = 1.0
         ):
         """
         Initialize the FPGA placement optimizer.
@@ -85,42 +80,42 @@ class FPGAPlacementOptimizer:
             coupling_matrix: Instance connectivity matrix
             drawer: Optional PlacementDrawer for visualization
             visualization_steps: Steps at which to visualize (default: [0, 250, 500, 750, 999])
+            hpwl_weight: Weight for HPWL loss (default: 1.0)
+            constraint_weight: Weight for constraint loss (default: 1.0)
         """
         self.num_inst = num_inst
         self.coupling_matrix = coupling_matrix
         self.drawer = drawer
         self.visualization_steps = visualization_steps or [0, 250, 500, 750, 999]
+        self.constraint_weight = constraint_weight
 
-    def _initialize_potentials(self, num_trials, q, dev, dtype, h_factor, seed):
+    def _initialize_potentials(self, num_trials, grid_width, grid_height, dev, dtype, h_factor, seed):
         """
-        Initialize separate potentials for X and Y coordinates.
+        Initialize joint potentials for all 2D positions.
 
         Args:
             num_trials: Number of parallel trials
-            q: Grid dimension size
+            grid_width: Grid width
+            grid_height: Grid height
             dev: Device ('cpu' or 'cuda')
             dtype: Torch dtype
             h_factor: Initialization scale factor
             seed: Random seed
 
         Returns:
-            h_x, h_y: Initialized potentials for X and Y
+            h: Initialized potentials [num_trials, num_inst, grid_width * grid_height]
         """
         torch.manual_seed(seed)
 
-        h_x = h_factor * torch.randn(
-            [num_trials, self.num_inst, q],
-            device=dev, dtype=dtype
-        )
-        h_y = h_factor * torch.randn(
-            [num_trials, self.num_inst, q],
+        num_positions = grid_width * grid_height
+        h = h_factor * torch.randn(
+            [num_trials, self.num_inst, num_positions],
             device=dev, dtype=dtype
         )
 
-        h_x.requires_grad = True
-        h_y.requires_grad = True
+        h.requires_grad = True
 
-        return h_x, h_y
+        return h
 
     def _setup_optimizer(self, params, optimizer_name, learning_rate):
         """Set up the torch optimizer."""
@@ -148,38 +143,34 @@ class FPGAPlacementOptimizer:
         return betas.to(dtype).to(dev)
 
     def iterate_placement(
-            self, num_trials, num_steps, q, dev, dtype,
+            self, num_trials, num_steps, grid_width, grid_height, dev, dtype,
             betamin, betamax, anneal, optimizer_name, learning_rate,
             h_factor, seed
         ):
         """
-        FEM optimization loop for FPGA placement with separate X/Y coordinates.
+        FEM optimization loop for FPGA placement with joint XY distribution.
 
         Uses free energy minimization with HPWL and constraint losses.
         """
         # Initialize
-        h_x, h_y = self._initialize_potentials(
-            num_trials, q, dev, dtype, h_factor, seed
+        h = self._initialize_potentials(
+            num_trials, grid_width, grid_height, dev, dtype, h_factor, seed
         )
-        opt = self._setup_optimizer([h_x, h_y], optimizer_name, learning_rate)
+        opt = self._setup_optimizer([h], optimizer_name, learning_rate)
         betas = self._setup_betas(num_steps, betamin, betamax, anneal, dev, dtype)
 
         # Iterate
         for step in range(num_steps):
             # Convert potentials to probabilities
-            p_x = torch.softmax(h_x, dim=2)
-            p_y = torch.softmax(h_y, dim=2)
+            p = torch.softmax(h, dim=2)
 
             opt.zero_grad()
 
             # Calculate losses
-            hpwl_loss, constrain_loss = expected_fpga_placement_xy(
-                self.coupling_matrix, p_x, p_y
-            )
+            hpwl_loss, constrain_loss = expected_fpga_placement_joint(self.coupling_matrix, p, grid_width, grid_height)
 
-            # Calculate free energy
-            free_energy = hpwl_loss + constrain_loss - \
-                (entropy_q(p_x) + entropy_q(p_y)) / betas[step]
+            # Calculate free energy with weighted losses
+            free_energy = hpwl_loss + self.constraint_weight * constrain_loss - entropy_q(p) / betas[step]
 
             # Backpropagate
             free_energy.backward(gradient=torch.ones_like(free_energy))
@@ -187,23 +178,26 @@ class FPGAPlacementOptimizer:
 
             # Visualization at specified steps
             if self.drawer is not None and step in self.visualization_steps:
-                coords = get_site_coordinates_from_px_py(p_x, p_y)
+                coords = get_site_coordinates_from_p_joint(p, grid_width)
                 self.drawer.add_placement(coords[0].detach(), step)
-                print(f"INFO: Step {step}, HPWL loss = {[f'{x:.2f}' for x in hpwl_loss.tolist()]}, "
-                      f"Constraint loss = {[f'{x:.2f}' for x in constrain_loss.tolist()]}")
+                print(f"INFO: Step {step},\n"
+                      f"HPWL loss = {[f'{x:.2f}' for x in hpwl_loss.tolist()]},\n"
+                      f"Constraint loss = {[f'{x:.2f}' for x in (constrain_loss*self.constraint_weight).tolist()]},\n"
+                      f"Free energy = {[f'{x:.2f}' for x in free_energy.tolist()]}")
 
         # Draw multi-step visualization
         if self.drawer is not None and len(self.drawer.placement_history) > 0:
             self.drawer.draw_multi_step_placement()
 
-        return p_x, p_y
+        return p
 
     def optimize(
             self,
             num_trials: int = 10,
             num_steps: int = 1000,
             dev: str = 'cpu',
-            q: Optional[int] = None,
+            grid_width: Optional[int] = None,
+            grid_height: Optional[int] = None,
             betamin: float = 0.01,
             betamax: float = 0.5,
             anneal: str = 'inverse',
@@ -215,13 +209,14 @@ class FPGAPlacementOptimizer:
             **kwargs
         ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Run FPGA placement optimization.
+        Run FPGA placement optimization with joint distribution.
 
         Args:
             num_trials: Number of parallel optimization trials
             num_steps: Number of optimization steps
             dev: Device to run on ('cpu' or 'cuda')
-            q: Grid size for each coordinate dimension
+            grid_width: Grid width (required)
+            grid_height: Grid height (defaults to grid_width if not specified)
             betamin: Minimum inverse temperature
             betamax: Maximum inverse temperature
             anneal: Annealing schedule ('lin', 'exp', or 'inverse')
@@ -235,17 +230,20 @@ class FPGAPlacementOptimizer:
             config: Optimized placement configurations [num_trials, num_inst, 2]
             result: HPWL values for each trial [num_trials]
         """
-        if q is None:
-            raise ValueError("q (grid size) must be specified for FPGA placement")
+        if grid_width is None:
+            raise ValueError("grid_width must be specified for FPGA placement")
+
+        if grid_height is None:
+            grid_height = grid_width
 
         # Run FEM iteration
-        p_x, p_y = self.iterate_placement(
-            num_trials, num_steps, q, dev, dtype,
+        p = self.iterate_placement(
+            num_trials, num_steps, grid_width, grid_height, dev, dtype,
             betamin, betamax, anneal, optimizer, learning_rate,
             h_factor, seed
         )
 
         # Inference
-        config, result = infer_placements_xy(self.coupling_matrix, p_x, p_y)
+        config, result = infer_placements_joint(self.coupling_matrix, p, grid_width, grid_height)
 
         return config, result

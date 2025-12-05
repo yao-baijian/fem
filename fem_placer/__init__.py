@@ -9,12 +9,12 @@ from .placer import FpgaPlacer
 from .drawer import PlacementDrawer
 from .legalizer import Legalizer
 from .router import Router
-from .optimizer import FPGAPlacementOptimizer
+from .optimizer import FPGAPlacementOptimizerJoint
 from .objectives import (
-    expected_fpga_placement_xy,
-    infer_placements_xy,
-    get_hpwl_loss_xy_simple,
-    get_constraints_loss_xy
+    expected_fpga_placement_joint,
+    infer_placements_joint,
+    get_hpwl_loss_joint,
+    get_constraints_loss_joint
 )
 
 __all__ = [
@@ -22,9 +22,9 @@ __all__ = [
     'PlacementDrawer',
     'Legalizer',
     'Router',
-    'FPGAPlacementOptimizer',
-    'expected_fpga_placement_xy',
-    'infer_placements_xy',
-    'get_hpwl_loss_xy_simple',
-    'get_constraints_loss_xy',
+    'FPGAPlacementOptimizerJoint',
+    'expected_fpga_placement_joint',
+    'infer_placements_joint',
+    'get_hpwl_loss_joint',
+    'get_constraints_loss_joint',
 ]

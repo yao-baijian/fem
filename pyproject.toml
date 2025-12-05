@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
-gpu = ["torch", "torchvision", "torchaudio"]
+torch = ["torch", "torchvision", "torchaudio"]
 
 [tool.setuptools.packages.find]
 where = ["."]
