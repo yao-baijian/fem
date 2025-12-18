@@ -166,3 +166,5 @@ cython_debug/
 
 vivado/*
 .Xil/
+
+result/*

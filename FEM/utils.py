@@ -68,7 +68,6 @@ def parse_design(fpga_wrapper):
 
     return n, m, J, J_extend
 
-
 def load_matrix(path:'str',numer_package:'str',store_format:'str') -> 'float':
     """"
     Load the coupling matrix of the Graph instance from '.txt' file to python matrix.
@@ -427,6 +426,39 @@ def read_hypergraph_bisecgraph(file, index_start=1):
         neighbor_sets[u].add(v)
     
     return n_new, m, J
+
+def hypergraph_to_cycle(file, index_start=1):
+
+    with open(file, "r") as f:
+        l = f.readline()
+        m, n = [int(x) for x in l.split(" ") if x != "\n"]
+        
+        hyperedges = []
+        for _ in range(m):
+            l = f.readline()
+            vertices = [int(x) - index_start for x in l.split() if x != "\n"]
+            hyperedges.append(vertices)
+
+    # n, m, hyperedges = read_hypergraph(file, index_start)
+    
+    # 构建邻接矩阵
+    J = torch.zeros((n, n))
+    
+    for vertices in hyperedges:
+        if len(vertices) < 2:
+            continue
+            
+        # 将顶点连接成环
+        k = len(vertices)
+        for i in range(k):
+            u = vertices[i]
+            v = vertices[(i + 1) % k]  # 环连接
+            weight = 1.0 / k  # 均匀分配权重
+            
+            J[u, v] += weight
+            J[v, u] += weight
+    
+    return n, m, J
 
 def read_cnf(path):
     with open(path,'r') as f:

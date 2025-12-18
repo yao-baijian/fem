@@ -224,7 +224,7 @@ class OptimizationProblem:
     def set_up_couplings_status(self, dev, dtype):
         self.coupling_matrix = self.coupling_matrix.to(dtype).to(dev)
     
-    def expectation(self, p):
+    def expectation(self, p, step = 0):
         if self.problem_type == 'maxcut':
             return -expected_cut(self.coupling_matrix/2, p)
         elif self.problem_type == 'bmincut':
@@ -248,8 +248,8 @@ class OptimizationProblem:
         
 # **********************************   Start   *********************************** #
         elif self.problem_type == 'fpga_placement':
-            return expected_fpga_placement_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            # return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.net_sites_tensor, self.best_hpwl)
+            # return expected_fpga_placement_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
+            return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.net_sites_tensor, self.best_hpwl)
 # **********************************    End    *********************************** #
           
         elif self.problem_type == 'customize':
@@ -296,8 +296,8 @@ class OptimizationProblem:
 
 # **********************************   Start   *********************************** #
         elif self.problem_type == 'fpga_placement':
-            config, result = infer_placements_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            # config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
+            # config, result = infer_placements_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
+            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix, self.net_sites_tensor)
 # **********************************    END    *********************************** #
 
         elif self.problem_type == 'customize':
