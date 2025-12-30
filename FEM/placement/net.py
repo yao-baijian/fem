@@ -1,45 +1,132 @@
-# net_manager.py
 import torch
 import rapidwright
-from .hpwl import HPWLCalculator
-from typing import Dict, Set
+from typing import Dict, Set, Tuple
 from com.xilinx.rapidwright.design import Design, Net
+from .hpwl import HPWLCalculator
+from .config import *
+from .logger import INFO, WARNING, ERROR
 
 class NetManager:
     
-    def __init__(self, slice_site_enum=None, io_site_enum=None):
-        self.slice_site_enum = slice_site_enum
-        self.io_site_enum = io_site_enum
-    
-        self.nets = []  
-        self.net_names = [] 
-        
-        self.net_to_sites = {} 
-        self.site_to_nets = {} 
+    def __init__(self, 
+                 get_site_inst_id_by_name_func=None, 
+                 get_site_inst_name_by_id_func=None,
+                 map_coords_to_instance_func=None,
+                 debug=False):
+
+        self.debug = debug
         self.site_to_site_connectivity = {} 
         self.io_to_site_connectivity = {} 
+        self.net_to_sites = {}
+        self.site_to_nets = {}
+        self.nets = []  
+        self.net_names = []
+        self.net_tensor = None
+        self.insts_matrix = None
+        self.io_insts_matrix = None
         
-        self.net_tensor = None  # [num_nets, num_sites] 
-        self.connection_matrix = None  # [num_sites, num_sites] 
-
+        self.get_site_inst_id_by_name_func = get_site_inst_id_by_name_func
+        self.get_site_inst_name_by_id_func = get_site_inst_name_by_id_func
+        self.map_coords_to_instance_func = map_coords_to_instance_func
+        
         self.debug_src_root = "result/net_manager_debug.txt"
+        self.hpwl_calculator = HPWLCalculator(debug=debug)
         
-        self.hpwl_calculator = HPWLCalculator()
-        
-    def analyze_nets(self, design: Design, instance_mapping: Dict[str, int]):
-        self.nets = list(design.getNets())
+    def analyze_design_hpwl(self, design):
+        self.hpwl_calculator.clear()
+        self.nets = design.getNets()
         self.net_names = [net.getName() for net in self.nets]
-        
-        valid_net_idx = 0
         
         for net in self.nets:
             net_name = net.getName()
+            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, True)
+
+        for net in self.nets:
+            net_name = net.getName()
+            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, False)
             
-            # 跳过时钟、电源、地网络
+        total_hpwl, total_hpwl_no_io = self.hpwl_calculator.get_hpwl()
+        
+        if self.debug:
+            INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
+            self.save_net_debug_info()
+
+        return total_hpwl, total_hpwl_no_io
+
+    def analyze_solver_hpwl(self, coords, io_coords=None, include_io=False):
+        self.hpwl_calculator.clear() 
+        instance_coords = self.map_coords_to_instance_func(coords, io_coords, include_io)       
+        for net_name, connected_sites in self.net_to_sites.items():
+            self.hpwl_calculator.compute_net_hpwl(net_name, connected_sites, instance_coords, include_io=include_io)
+        
+        total_hpwl, total_hpwl_no_io = self.hpwl_calculator.get_hpwl()
+        
+        if self.debug:
+            INFO(f"Solver hpwl {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f}.")
+            # self.save_solver_hpwl_debug(instance_coords, self.net_to_sites)
+        
+        return total_hpwl, total_hpwl_no_io
+    
+    def save_net_debug_info(self, output_path='result/net_debug_info.txt'):
+        with open(output_path, 'w') as f:
+            f.write("Net_IDX\tNet_Name\tHPWL\tSite_Count\tSites_Info\n")
+            for idx, net in enumerate(self.nets):
+                net_name = net.getName()
+                hpwl = self.hpwl_calculator.net_hpwl_no_io.get(net_name, 0.0)
+                
+                sites_set = set()
+                if not (net.isClockNet() or net.isVCCNet() or net.isGNDNet()):
+                    pins = net.getPins()
+                    
+                    for pin in pins:
+                        site_inst = pin.getSiteInst()
+                        if site_inst:
+                            site_name = site_inst.getName()
+                            site_x = site_inst.getInstanceX()
+                            site_y = site_inst.getInstanceY()
+                            site_key = f"{site_name}({site_x},{site_y})"
+                            sites_set.add(site_key)
+                
+                sites_list = sorted(list(sites_set))
+                site_count = len(sites_list)
+                sites_str = " | ".join(sites_list)
+                
+                if hpwl > 0.0:
+                    f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{site_count}\t{sites_str}\n")
+    
+    def save_solver_hpwl_debug(self, instance_coords, net_to_sites, output_path='result/solver_hpwl_debug.txt'):
+        with open(output_path, 'w') as f:
+            f.write("Net_IDX\tNet_Name\tHPWL\tInstance_Count\tInstances_Info\n")
+            
+            for idx, (net_name, connected_sites) in enumerate(net_to_sites.items()):
+                hpwl, _ = self.hpwl_calculator.compute_net_hpwl(net_name, connected_sites, instance_coords)
+                
+                if hpwl == 0.0:
+                    continue
+                
+                instances_info = []
+                for site_name in connected_sites:
+                    if site_name in instance_coords:
+                        coord = instance_coords[site_name]
+                        instance_info = f"{site_name}[({coord[0]:.2f},{coord[1]:.2f})]"
+                        instances_info.append(instance_info)
+                
+                instance_count = len(instances_info)
+                instances_str = " | ".join(instances_info)
+                
+                f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{instance_count}\t{instances_str}\n")
+                
+    def analyze_nets(self, optimizable_insts_num=0, available_sites_num=0, fixed_insts_num=0):
+        
+        self.net_names = [net.getName() for net in self.nets]
+        sites_net_list = []
+        valid_net_num = 0
+        
+        for net in self.nets:
+            net_name = net.getName()
             if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
                 continue
             
-            # 收集网络中的站点
             sites_in_net = set()
             logic_sites = set()
             io_sites = set()
@@ -51,47 +138,33 @@ class NetManager:
                 
                 sites_in_net.add(site_name)
                 
-                # 分类站点
-                if self.slice_site_enum and site_type in self.slice_site_enum:
+                if site_type in SLICE_SITE_ENUM:
                     logic_sites.add(site_name)
-                elif self.io_site_enum and site_type in self.io_site_enum:
+                elif site_type in IO_SITE_ENUM:
                     io_sites.add(site_name)
             
-            # 至少有两个逻辑站点才记录为有效网络
-            if len(logic_sites) >= 2:
-                self.net_to_sites[valid_net_idx] = {
-                    'name': net_name,
-                    'all_sites': list(sites_in_net),
-                    'logic_sites': list(logic_sites),
-                    'io_sites': list(io_sites)
-                }
+            if len(logic_sites) + len(io_sites) >= 2:
+                self.net_to_sites[net_name] = list(logic_sites) + list(io_sites)
                 
-                # 更新站点到网络的映射
                 for site_name in sites_in_net:
                     if site_name not in self.site_to_nets:
                         self.site_to_nets[site_name] = []
-                    self.site_to_nets[site_name].append(valid_net_idx)
+                    self.site_to_nets[site_name].append(net_name)
+                self._record_connectivity(logic_sites, io_sites)
                 
-                # 记录连接关系
-                self._record_connectivity(valid_net_idx, logic_sites, io_sites)
-                
-                valid_net_idx += 1
+            if len(logic_sites) >= 2:
+                valid_net_num += 1
+                sites_net_list.append(logic_sites)
         
-        # 创建张量表示
-        self._create_tensor_representations(instance_mapping)
-
-        instance_count = len(instance_mapping)
-        self.save_tensor_debug_info(instance_count=instance_count)
-        self.save_connectivity_debug_info()
-
-        print(f"NetManager: Processed {valid_net_idx} valid nets out of {len(self.nets)} total nets")
-        print(f"      Total {len(self.site_to_site_connectivity)} site-to-site routes")
-        print(f"      Total {len(self.io_to_site_connectivity)} io-to-site routes")
-        print(f"      Total {len(self.net_to_sites)} inter-tile routes")
-        
-        return self
+        self._create_net_tensor(valid_net_num, sites_net_list, optimizable_insts_num)
+        self._create_net_matrix(optimizable_insts_num, available_sites_num, fixed_insts_num)
+        self.save_tensor_debug_info(instance_count=optimizable_insts_num)
+        INFO(f"Processed {valid_net_num} nets, total {len(self.nets)} nets",
+              f" {len(self.site_to_site_connectivity)} site-to-site routes",
+              f" {len(self.io_to_site_connectivity)} io-to-site routes",
+              f" {len(self.net_to_sites)} inter-tile routes")
     
-    def _record_connectivity(self, net_idx: int, logic_sites: Set[str], io_sites: Set[str]):
+    def _record_connectivity(self, logic_sites: Set[str], io_sites: Set[str]):
         logic_sites_list = list(logic_sites)
         io_sites_list = list(io_sites)
         
@@ -141,113 +214,55 @@ class NetManager:
                 
                 # 原始代码中有重复的 += 1，这里我们只加一次
                 # self.site_to_site_connectivity[inst1][inst2] += 1  # 原始代码重复的第二次加1
-    
-    def _create_tensor_representations(self, instance_mapping: Dict[str, int]):
-        """创建张量表示的网络连接矩阵"""
-        num_nets = len(self.net_to_sites)
-        num_instances = len(instance_mapping)
+
+    def _create_net_tensor(self, valid_net_num, sites_net_list, optimizable_insts_num):        
+        self.net_tensor = torch.zeros(valid_net_num, optimizable_insts_num, dtype=torch.bool)
         
-        # 创建net_tensor
-        self.net_tensor = torch.zeros((num_nets, num_instances), dtype=torch.bool)
+        for net_idx, sites in enumerate(sites_net_list):
+            site_idx = []
+            for site_name in sites:
+                instance_idx = self.get_site_inst_id_by_name_func(site_name)
+                site_idx.append(instance_idx)
+                self.net_tensor[net_idx, instance_idx] = True
         
-        for net_idx, net_data in self.net_to_sites.items():
-            for site_name in net_data['logic_sites']:
-                if site_name in instance_mapping:
-                    inst_idx = instance_mapping[site_name]
-                    self.net_tensor[net_idx, inst_idx] = True
+        self.connection_matrix = torch.zeros((optimizable_insts_num, optimizable_insts_num))
+        INFO(f"Net_tensor shape {self.net_tensor.shape}")
         
-        # 创建连接矩阵J
-        self.connection_matrix = torch.zeros((num_instances, num_instances))
+    def _create_net_matrix(self, optimizable_insts_num, available_sites_num, fixed_insts_num):        
+        n = optimizable_insts_num
+        m = available_sites_num
+        k = fixed_insts_num
+        self.insts_matrix = torch.zeros((n, n))
+
+        for source_site, connections in self.site_to_site_connectivity.items():
+            source_id = self.get_site_inst_id_by_name_func(source_site)
+            if source_id is not None:
+                for target_site, connection_count in connections.items():
+                    target_id = self.get_site_inst_id_by_name_func(target_site)
+                    if target_id is not None:
+                        self.insts_matrix[source_id, target_id] = connection_count
+                    else:
+                        ERROR(f'Cannot find site target id {target_id}')
+            else:
+                ERROR(f'Cannot find site source id {source_site}')
+
+        self.io_insts_matrix = torch.zeros((n + k, n + k))
+
+        for source_site, connections in self.io_to_site_connectivity.items():
+            source_id = self.get_site_inst_id_by_name_func(source_site)
+            if source_id is not None:
+                for target_site, connection_count in connections.items():
+                    target_id = self.get_site_inst_id_by_name_func(target_site)
+                    if target_id is not None:
+                        self.io_insts_matrix[source_id, target_id] = connection_count
+                    else:
+                        ERROR(f'Cannot find site target id {target_id}')
+            else:
+                ERROR(f'Cannot find site source id {source_site}')
         
-        for inst1_name, connections in self.site_to_site_connectivity.items():
-            if inst1_name in instance_mapping:
-                inst1_idx = instance_mapping[inst1_name]
-                for inst2_name, weight in connections.items():
-                    if inst2_name in instance_mapping:
-                        inst2_idx = instance_mapping[inst2_name]
-                        self.connection_matrix[inst1_idx, inst2_idx] += weight
-                        self.connection_matrix[inst2_idx, inst1_idx] += weight
-        
-        print(f"Created tensor representations: "
-              f"net_tensor shape {self.net_tensor.shape}, "
-              f"connection_matrix shape {self.connection_matrix.shape}")
-    
-    def get_net_statistics(self) -> Dict:
-        """获取网络统计信息"""
-        if self.net_tensor is None:
-            return {}
-        
-        stats = {
-            'num_nets': self.net_tensor.shape[0],
-            'num_instances': self.net_tensor.shape[1],
-            'avg_instances_per_net': self.net_tensor.sum(dim=1).float().mean().item(),
-            'max_instances_per_net': self.net_tensor.sum(dim=1).max().item(),
-            'min_instances_per_net': self.net_tensor.sum(dim=1).min().item(),
-            'avg_nets_per_instance': self.net_tensor.sum(dim=0).float().mean().item(),
-        }
-        return stats
-    
-    def validate_net_tensor(self) -> Dict:
-        """验证net_tensor的有效性"""
-        if self.net_tensor is None:
-            return {'is_valid': False, 'error': 'net_tensor is None'}
-        
-        issues = []
-        
-        # 检查空网络
-        empty_nets = (self.net_tensor.sum(dim=1) == 0).sum().item()
-        if empty_nets > 0:
-            issues.append(f"{empty_nets} empty nets")
-        
-        # 检查单实例网络
-        single_instance_nets = (self.net_tensor.sum(dim=1) == 1).sum().item()
-        if single_instance_nets > 0:
-            issues.append(f"{single_instance_nets} single-instance nets")
-        
-        # 检查孤立实例
-        isolated_instances = (self.net_tensor.sum(dim=0) == 0).sum().item()
-        if isolated_instances > 0:
-            issues.append(f"{isolated_instances} isolated instances")
-        
-        return {
-            'is_valid': len(issues) == 0,
-            'issues': issues,
-            'empty_nets': empty_nets,
-            'single_instance_nets': single_instance_nets,
-            'isolated_instances': isolated_instances
-        }
-    
-    def save_debug_info(self):
-        with open(self.debug_src_root, 'w') as f:
-            f.write("=" * 60 + "\n")
-            f.write("NetManager Debug Information\n")
-            f.write("=" * 60 + "\n\n")
-            
-            # 基本信息
-            f.write("Basic Information:\n")
-            f.write(f"  Total nets processed: {len(self.net_to_sites)}\n")
-            
-            if self.net_tensor is not None:
-                f.write(f"  net_tensor shape: {self.net_tensor.shape}\n")
-                f.write(f"  connection_matrix shape: {self.connection_matrix.shape}\n\n")
-            
-            # 网络详情
-            f.write("Network Details (first 10 nets):\n")
-            for net_idx in range(min(10, len(self.net_to_sites))):
-                net_data = self.net_to_sites.get(net_idx, {})
-                f.write(f"  Net {net_idx} ({net_data.get('name', 'N/A')}):\n")
-                f.write(f"    Logic sites: {len(net_data.get('logic_sites', []))}\n")
-                f.write(f"    IO sites: {len(net_data.get('io_sites', []))}\n")
-            
-            f.write("\n" + "=" * 60 + "\n")
-        
-        print(f"NetManager debug info saved to {self.debug_src_root}")
+        INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
 
     def save_tensor_debug_info(self, output_path='result/net_to_slice_sites_tensor_debug.txt', instance_count=None):
-        if self.net_tensor is None:
-            print("Warning: net_tensor is None, skipping debug info save")
-            return
-        
         num_nets = self.net_tensor.shape[0]
         if instance_count is None:
             instance_count = self.net_tensor.shape[1]
@@ -315,39 +330,20 @@ class NetManager:
                         
                 nets_str = ", ".join(connected_nets) if connected_nets else "None"
                 f.write(f"{instance_idx}\t{int(connections)}\t{nets_str}\n")
-        
-        print(f"Net tensor debug info saved to {output_path}")
+    
+    def get_single_instance_net_hpwl(self, instance_id: int, 
+                                     coords: Dict[str, Tuple[float, float]], 
+                                     io_coords: Dict[str, Tuple[float, float]], 
+                                     include_io: bool = True) -> float: 
+        instance_hpwl = 0.0       
+        site_name = self.get_site_inst_name_by_id_func(instance_id)
+        net_group = self.site_to_nets[site_name]
+        instance_nets_connection = []
+        instance_coords = self.map_coords_to_instance_func(coords, io_coords, include_io)
+        for net_name in net_group:
+            instance_nets_connection.append(self.net_to_sites[net_name])        
+        for connected_sites in instance_nets_connection:
+            hpwl, _ = self.hpwl_calculator.compute_single_instance_hpwl(connected_sites, instance_coords)
+            instance_hpwl += hpwl
 
-    def save_connectivity_debug_info(self, output_path='result/connectivity_debug.txt'):
-        """保存连接关系debug信息"""
-        with open(output_path, 'w') as f:
-            f.write("=" * 60 + "\n")
-            f.write("Site-to-Site Connectivity\n")
-            f.write("=" * 60 + "\n")
-            
-            total_connections = 0
-            for site1, connections in self.site_to_site_connectivity.items():
-                for site2, weight in connections.items():
-                    total_connections += weight
-                    f.write(f"{site1} <-> {site2}: {weight}\n")
-            
-            f.write(f"\nTotal site-to-site connections: {total_connections}\n")
-            
-            f.write("\n" + "=" * 60 + "\n")
-            f.write("IO-to-Site Connectivity\n")
-            f.write("=" * 60 + "\n")
-            
-            io_connections = 0
-            for io_site, connections in self.io_to_site_connectivity.items():
-                for logic_site, weight in connections.items():
-                    io_connections += weight
-                    f.write(f"{io_site} -> {logic_site}: {weight}\n")
-            
-            f.write(f"\nTotal IO-to-site connections: {io_connections}\n")
-            
-            f.write("\n" + "=" * 60 + "\n")
-            f.write("Network Summary\n")
-            f.write("=" * 60 + "\n")
-            f.write(f"Total nets analyzed: {len(self.net_to_sites)}\n")
-            f.write(f"Total inter-tile routes: {len(self.net_to_sites)}\n")
-        
+        return instance_hpwl

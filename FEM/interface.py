@@ -16,7 +16,10 @@ class FEM:
 
 # **********************************   START   *********************************** # 
         if problem_type == 'fpga_placement':
-            num_inst, num_site, J, io_site_connect_matrix = parse_design(fpga_wrapper) 
+            J = fpga_wrapper.net_manager.insts_matrix
+            io_site_connect_matrix = fpga_wrapper.net_manager.io_insts_matrix
+            num_inst = len(fpga_wrapper.optimizable_insts)
+            num_site = len(fpga_wrapper.available_sites)
             fem = cls()
             fem.set_up_problem(
                 num_inst, num_site, problem_type, J, epsilon=epsilon, io_site_connect_matrix = io_site_connect_matrix, hyperedges=hyperedges, fpga_wrapper = fpga_wrapper, q=q,**args

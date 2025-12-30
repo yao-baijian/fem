@@ -20,7 +20,6 @@ class Grid:
         return True
     
     def move_instance(self, instance_id: int, new_x: int, new_y: int, swap_allowed=False):
-        """移动实例到新位置"""
         if instance_id not in self.instance_positions:
             raise KeyError(f"实例{instance_id}不存在")
         

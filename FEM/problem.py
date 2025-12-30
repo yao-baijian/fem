@@ -211,9 +211,9 @@ class OptimizationProblem:
 
 # **********************************   Start   *********************************** # 
         if self.problem_type == 'fpga_placement':                                   # store site coordinates matrix
-            self.net_sites_tensor = self.fpga_wrapper.net_to_slice_sites_tensor      # Net to slice sites mapping tensor
+            self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor      # Net to slice sites mapping tensor
             self.bbox_length = self.fpga_wrapper.bbox['area_length']          # FPGA layout boundary size 
-            self.site_coords_matrix = get_site_coords_all(self.fpga_wrapper.num_of_sites, self.bbox_length) # All site coordinates matrix
+            self.site_coords_matrix = get_site_coords_all(self.bbox_length ** 2, self.bbox_length) # All site coordinates matrix
             self.best_hpwl = torch.full((10,), float('inf'))        # Track best HPWL history
             return
 # **********************************    End   ************************************ #

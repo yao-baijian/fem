@@ -24,7 +24,7 @@ def get_expected_placements_from_index(p, site_coords_matrix):
     return expected_coords
 
 def get_site_coords_all(num_locations, area_width):
-    indices = torch.arange(num_locations, dtype=torch.float32)
+    indices = torch.arange(num_locations, dtype=torch.float32, device='cuda')
     x_coords = indices % area_width
     y_coords = indices // area_width
     return torch.stack([x_coords, y_coords], dim=1)
@@ -77,6 +77,29 @@ def get_hpwl_loss(J, p, site_coords_matrix):
     weighted_dist_triu = weighted_dist[:, triu_mask]  # [batch_size, num_pairs]
     
     total_wirelength = torch.sum(weighted_dist_triu, dim=1)  # [batch_size]
+    return total_wirelength
+
+def get_hpwl_loss_qubo(J, p, site_coords_matrix):
+    batch_size, num_instances, num_sites = p.shape
+    
+    # 1. 距离矩阵
+    coords_i = site_coords_matrix.unsqueeze(1)  # [num_sites, 1, 2]
+    coords_j = site_coords_matrix.unsqueeze(0)  # [1, num_sites, 2]
+    D = torch.sum(torch.abs(coords_i - coords_j), dim=2)  # [num_sites, num_sites]
+    
+    # 2. 批处理矩阵乘法: (p @ D) @ p^T
+    PD = torch.matmul(p, D)  # [batch_size, num_instances, num_sites]
+    P_transposed = p.transpose(1, 2)  # [batch_size, num_sites, num_instances]
+    E_matrix = torch.bmm(PD, P_transposed)  # [batch_size, num_instances, num_instances]
+    
+    # 3. 上三角掩码
+    triu_mask = torch.triu(torch.ones(num_instances, num_instances, device=p.device), diagonal=1).bool()
+    
+    # 4. 加权并求和
+    weighted_E = E_matrix * J.unsqueeze(0)  # 广播J到每个batch
+    weighted_E_triu = weighted_E[:, triu_mask]  # [batch_size, num_pairs]
+    total_wirelength = torch.sum(weighted_E_triu, dim=1)  # [batch_size]
+    
     return total_wirelength
 
 # use LSE model to estimate wire length
@@ -268,8 +291,14 @@ def get_constraints_loss(p):
     # site_usage = torch.sum(topk_values, dim=1)  # [batch, site]
 
     expected_usage_per_site = float(num_instance) / num_sites
-    site_constraint_softplus = torch.sum((30 * Func.relu(site_usage - expected_usage_per_site))**2, dim=1)
+    site_constraint_softplus = torch.sum(3 * Func.relu(site_usage - 1)**2, dim=1)
     return site_constraint_softplus
+
+
+def get_constraints_loss_qubo(p, lambda_weight=10.0):
+    p_norm_sq = torch.sum(p**2, dim=2)  # [batch_size, num_instances]
+    constraint_loss = torch.sum(1 - p_norm_sq, dim=1)  # [batch_size]
+    return lambda_weight * constraint_loss
 
 def get_constraints_loss_diff(p, site_coords_matrix):
     """
@@ -644,20 +673,24 @@ def expected_fpga_placement(J, p, io_site_connect_matrix, site_coords_matrix, ne
     total_energy = 0
     hpwl_weight, timing_weight, constrain_weight = 1, 1, 20
 
-    current_hpwl = get_hpwl_loss(J, p, site_coords_matrix)
+    # current_hpwl = get_hpwl_loss(J, p, site_coords_matrix)
     # current_hpwl = get_hpwl_loss_topk_simple(J, p, site_coords_matrix, k = 30)
     # current_hpwl = get_hpwl_loss_from_net_tensor_wa_vectorized(p, net_sites_tensor, site_coords_matrix)
     # current_hpwl = get_hpwl_loss_from_net_tensor_lse(p, net_sites_tensor, site_coords_matrix)
+    
+    current_hpwl = get_hpwl_loss_qubo(J, p, site_coords_matrix)
 
     # improved_mask = current_hpwl < best_hpwl
     # best_hpwl[improved_mask] = current_hpwl[improved_mask]
 
-    # constrain_loss = get_constraints_loss(p)
+    constrain_loss = get_constraints_loss(p)
     # constrain_loss = get_reward_based_constraints_loss(p, current_hpwl, best_hpwl, constrain_weight)
-    constrain_loss = get_constraints_loss_expected_coords(p, site_coords_matrix)
+    # constrain_loss = get_constraints_loss_expected_coords(p, site_coords_matrix)
     # constrain_loss = get_constraints_loss_topk(p, site_coords_matrix)
     # constrain_loss = get_constraints_loss_site_exclusivity_st(p) + get_constraints_loss_centering(p, site_coords_matrix)
     # constrain_loss = get_constraints_loss_combined_fast(p)
+    
+    # constrain_loss = get_constraints_loss_qubo(p)
     
     # total_energy += hpwl_weight *  hpwl_loss + constrain_weight * constrain_loss
     
@@ -690,7 +723,7 @@ def infer_site_coordinates(expected_site_index, area_width):
 def infer_placements(J, p, area_width, site_coords_matrix, net_sites_tensor):
     site_indices = torch.argmax(p, dim=2)
     site_coords = get_site_coordinates_from_index(site_indices, area_width)
-    print(f'argmax {site_coords[0]}')
+    # print(f'argmax {site_coords[0]}')
     expected_coords = get_expected_placements_from_index(p, site_coords_matrix)
     # print(f'expected {expected_coords[0]}')
 

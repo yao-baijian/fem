@@ -1,10 +1,20 @@
 # 定义目标列表
 set benchmarks {
-    c1355 /home/byao/Desktop/Benchmarks/ISCAS85/c1355/c1355.v
-    c5315 /home/byao/Desktop/Benchmarks/ISCAS85/c5315/c5315.v
-    s9234 /home/byao/Desktop/Benchmarks/ISCAS89/s9234.v
-    s15850 /home/byao/Desktop/Benchmarks/ISCAS89/s15850.v
+    c880 C:\\Project\\Benchmarks\\ISCAS85\\c880.v
+    c1355 C:\\Project\\Benchmarks\\ISCAS85\\c1355.v
+    c2670 C:\\Project\\Benchmarks\\ISCAS85\\c2670.v
+    c5315 C:\\Project\\Benchmarks\\ISCAS85\\c5315.v
+    c6288 C:\\Project\\Benchmarks\\ISCAS85\\c6288.v
+    c7552 C:\\Project\\Benchmarks\\ISCAS85\\c7552.v
+    s713 C:\\Project\\Benchmarks\\ISCAS89\\s713.v
+    s1238 C:\\Project\\Benchmarks\\ISCAS89\\s1238.v
+    s1488 C:\\Project\\Benchmarks\\ISCAS89\\s1488.v
+    s5378 C:\\Project\\Benchmarks\\ISCAS89\\s5378.v
+    s9234 C:\\Project\\Benchmarks\\ISCAS89\\s9234.v
+    s15850 C:\\Project\\Benchmarks\\ISCAS89\\s15850.v
 }
+
+
 
 set part_name {xcvu065-ffvc1517-1-i}
 set base_output_dir {output_dir}
@@ -57,7 +67,7 @@ foreach {top_module rtl_file} $benchmarks {
     puts ""
     
     # 关闭当前项目，准备下一个
-    # close_project
+    close_project
 }
 
 # report_timing_violations -file $output_dir/timing_violations.rpt
