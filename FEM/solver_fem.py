@@ -1,7 +1,7 @@
 import torch
 from .problem import *
 from math import log
-from utils import *
+from .utils import *
 
 def entropy_q(p):
     """
@@ -63,8 +63,23 @@ class Solver:
         else:
 # **********************************   Start   *********************************** #
             if self.problem.problem_type == 'fpga_placement':
-                self.length = self.problem.fpga_wrapper.bbox['area_length']
+                self.length = self.problem.bbox_length
+                if self.problem.fpga_wrapper.with_io():
+                    h_logic = self.h_factor * torch.randn(
+                        [self.num_trials, self.problem.num_nodes, self.q], 
+                        device=self.dev, dtype=self.dtype
+                    )
+                    
+                    h_io = self.h_factor * torch.randn(
+                        [self.num_trials, self.problem.fpga_wrapper.fixed_insts_num, self.problem.fpga_wrapper.fixed_insts_num], 
+                        device=self.dev, dtype=self.dtype
+                    )
 
+                    h_logic.requires_grad=True
+                    h_io.requires_grad=True
+
+                    return h_logic, h_io
+                    
                 h = self.h_factor * torch.randn(
                     [self.num_trials, self.problem.num_nodes, self.q], 
                     device=self.dev, dtype=self.dtype
@@ -73,72 +88,12 @@ class Solver:
                 h.requires_grad=True
 
                 return h
-                
-                # num_trials = self.num_trials
-                # num_nodes = self.problem.num_nodes
-                # center_site_idx = self.q // 2
-                # h = torch.zeros([num_trials, num_nodes, self.q], device=self.dev, dtype=self.dtype)
-
-                # center_strength = 2.0
-                # peripheral_strength = 1.0
-                
-                # h[:, :, center_site_idx] = center_strength
-                # peripheral_mask = torch.ones(self.q, dtype=torch.bool, device=self.dev)
-                # peripheral_mask[center_site_idx] = False
-                # h[:, :, peripheral_mask] = peripheral_strength
-                # h += self.h_factor * 0.1 * torch.randn_like(h)
-
-                # h.requires_grad=True
-
-                # return h
-
-                # Initialize separate potentials for X and Y coordinates in FPGA placement
-                # Each coordinate dimension gets its own probability distribution over site positions
-                # h_x = self.h_factor * torch.randn(
-                #     [self.num_trials, self.problem.num_nodes,  self.length], 
-                #     device=self.dev, dtype=self.dtype
-                # )
-
-                # h_y = self.h_factor * torch.randn(
-                #     [self.num_trials, self.problem.num_nodes,  self.length], 
-                #     device=self.dev, dtype=self.dtype
-                # )
-
-                # h_x.requires_grad=True
-                # h_y.requires_grad=True
-                # return h_x, h_y
 # **********************************    END    *********************************** #
             else:
                 h = self.h_factor * torch.randn(
                     [self.num_trials, self.problem.num_nodes, self.q], 
                     device=self.dev, dtype=self.dtype
                 )
-
-            # h = self.h_factor * torch.randn(
-            #     [self.num_trials, self.problem.num_nodes, self.q], 
-            #     device=self.dev, dtype=self.dtype
-            # )
-
-            # # 改进的多分类初始化
-            # n_trials = self.num_trials
-            # n_nodes = self.problem.num_nodes
-            # q = self.q
-            
-            # # 方法1：为每个节点随机选择一个主簇并增强
-            # h = torch.randn(n_trials, n_nodes, q, device=self.dev, dtype=self.dtype) * 0.2
-            
-            # # 为每个节点随机选择主簇
-            # main_clusters = torch.randint(0, q, (n_trials, n_nodes), device=self.dev)
-            
-            # # 使用scatter_高效地增强主簇
-            # batch_indices = torch.arange(n_trials, device=self.dev).unsqueeze(1).expand(-1, n_nodes)
-            # node_indices = torch.arange(n_nodes, device=self.dev).unsqueeze(0).expand(n_trials, -1)
-            
-            # h[batch_indices, node_indices, main_clusters] += 3.0
-            
-            # # 乘以h_factor保持原有缩放
-            # h = self.h_factor * h
-
         if self.manual_grad:
             h.requires_grad=False
         else:
@@ -182,47 +137,25 @@ class Solver:
                 h.grad = self.problem.manual_grad(p) - \
                     entropy_grad(p) / self.betas[step]
             else:
-                free_energy = self.problem.expectation(p) \
+                free_energy = self.problem.expectation(p, step) \
                     - entropy(p) / self.betas[step]
                 free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
             self.opt.step()
-
-        # self.drawer.draw_multi_step_placement()
-
         return p
 
 # **********************************   Start   *********************************** #
     def iterate_placement(self):
-
-        """
-        FEM optimization loop for FPGA placement with separate X/Y coordinates.
-        Uses free energy minimization with HPWL and constraint losses.
-        """
-
-        record_steps = [0, 250, 500, 750, 999]
-
-        # h_x, h_y = self.initialize()
-        # self.set_up_optimizer_placement([h_x, h_y])
-
-        h = self.initialize()
-        self.set_up_optimizer_placement([h])
-
+        h_logic, h_io = self.initialize()
+        self.set_up_optimizer_placement([h_logic, h_io])
         step_max = len(self.betas)
-
         for step in range(step_max):
-            # p_x = torch.softmax(h_x, dim=2)
-            # p_y = torch.softmax(h_y, dim=2)
-
-            p = torch.softmax(h, dim=2)
-            
+            p_logic = torch.softmax(h_logic, dim=2)
+            p_io = torch.softmax(h_io, dim=2)
             self.opt.zero_grad()
             entropy = entropy_q
-            # hpwl_loss, constrain_loss = self.problem.expectation([p_x, p_y])
-
-            hpwl_loss, constrain_loss = self.problem.expectation(p)
-
-            # free_energy = hpwl_loss + constrain_loss - \
-            #     (entropy(p_x) + entropy(p_y)) / self.betas[step]
+            loss = self.problem.expectation([p_logic, p_io])
+            free_energy = loss - \
+                (entropy(p_logic) + entropy(p_io)) / self.betas[step]
             
             # h_grad_hpwl = torch.autograd.grad(
             #     hpwl_loss, h_x, grad_outputs=torch.ones_like(hpwl_loss), retain_graph=True, allow_unused=True
@@ -231,89 +164,14 @@ class Solver:
             # h_grad_constrain = torch.autograd.grad(
             #     constrain_loss, h_x, grad_outputs=torch.ones_like(constrain_loss), retain_graph=True, allow_unused=True
             # )
-
-            free_energy = hpwl_loss + constrain_loss - \
-                (entropy(p)) / self.betas[step]
-            
-            h_grad_hpwl = torch.autograd.grad(
-                hpwl_loss, h, grad_outputs=torch.ones_like(hpwl_loss), retain_graph=True, allow_unused=True
-            )
-
-            h_grad_constrain = torch.autograd.grad(
-                constrain_loss, h, grad_outputs=torch.ones_like(constrain_loss), retain_graph=True, allow_unused=True
-            )
-
-            # print(f'hpwl Loss = {hpwl_loss}, constrain loss = {constrain_loss}, entropy {entropy(p).mean().item():.4f}')
-            
-            h_grad_hpwl_norm = []
-            h_grad_constrain_norm = []
-
-            for i in range(len(h_grad_hpwl)):
-                h_grad_hpwl_norm.append(torch.norm(h_grad_hpwl[i]).item())
-                h_grad_constrain_norm.append(torch.norm(h_grad_constrain[i]).item())
-
-            # if step in record_steps:
-            #     print(f"INFO, step {step}, hpwl Loss = {[f'{x:.2f}' for x in hpwl_loss.tolist()]}, \n \
-            #         hpwl grad norm = {h_grad_hpwl_norm}, \n \
-            #         constrain loss = {[f'{x:.2f}' for x in constrain_loss.tolist()]}, \n \
-            #         constrain grad norm = {h_grad_constrain_norm} ")
-            
             free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
             self.opt.step()
-            if step in record_steps:
-                # sites_coords = get_site_coordinates_from_px_py(p_x, p_y)
-                sites_coords = get_hard_placements_from_index(p, self.problem.site_coords_matrix)
-                self.drawer.add_placement(sites_coords[0], step)
-        
-        # print("***********************")
-        # print("INFO: Finished stage 1.")
-        # print("***********************")
-
-        # for step in range(step_max):
-        #     p = torch.softmax(h, dim=2)
-        #     self.opt.zero_grad()
-        #     entropy = entropy_q
-
-        #     hpwl_loss, constrain_loss = expected_fpga_placement_v2(
-        #         p, self.problem.site_coords_matrix, self.problem.net_sites_tensor
-        #     )
-
-        #     free_energy = hpwl_loss + constrain_loss - \
-        #         (entropy(p)) / self.betas[step]
-            
-        #     h_grad_hpwl = torch.autograd.grad(
-        #         hpwl_loss, h, grad_outputs=torch.ones_like(hpwl_loss), retain_graph=True, allow_unused=True
-        #     )
-
-        #     h_grad_constrain = torch.autograd.grad(
-        #         constrain_loss, h, grad_outputs=torch.ones_like(constrain_loss), retain_graph=True, allow_unused=True
-        #     )
-            
-        # #     print(f'hpwl Loss = {hpwl_loss}, constrain loss = {constrain_loss}')
-                  
-        #     h_grad_hpwl_norm = []
-        #     h_grad_constrain_norm = []
-
-        #     for i in range(len(h_grad_hpwl)):
-        #         h_grad_hpwl_norm.append(torch.norm(h_grad_hpwl[i]).item())
-        #         h_grad_constrain_norm.append(torch.norm(h_grad_constrain[i]).item())
-
-        #     if step in record_steps:
-        #         print(f"INFO, step {step}, hpwl Loss = {[f'{x:.2f}' for x in hpwl_loss.tolist()]}, \n \
-        #             hpwl grad norm = {h_grad_hpwl_norm}, \n \
-        #             constrain loss = {[f'{x:.2f}' for x in constrain_loss.tolist()]}, \n \
-        #             constrain grad norm = {h_grad_constrain_norm} ")
-            
-        #     free_energy.backward(gradient=torch.ones_like(free_energy)) # minimize free energy
-        #     self.opt.step()
-        #     if step in record_steps:
-        #         sites_coords = get_hard_placements_from_index(p, self.problem.site_coords_matrix)
-        #         self.drawer.add_placement(sites_coords[0], step)
+            # sites_coords = get_site_coordinates_from_px_py(p_x, p_y)
+            # sites_coords = get_hard_placements_from_index(p, self.problem.site_coords_matrix)
+            # self.drawer.add_placement(sites_coords[0], step)
 
         # self.drawer.draw_multi_step_placement()
-
-        # return p_x, p_y
-        return p
+        return [p_logic, p_io]
 # **********************************   Start   *********************************** #
 
     def solve(self):
@@ -322,8 +180,12 @@ class Solver:
         if self.problem.problem_type == 'fpga_placement':
             # marginal_x, marginal_y = self.iterate_placement()
             # configs, results = self.problem.inference_value([marginal_x, marginal_y])
-            marginal = self.iterate_placement()
-            configs, results = self.problem.inference_value(marginal)
+            if self.problem.fpga_wrapper.with_io():
+                marginal = self.iterate_placement()
+                configs, results = self.problem.inference_value(marginal)
+            else:
+                marginal = self.iterate()
+                configs, results = self.problem.inference_value(marginal)
             return configs, results
 # **********************************    END    *********************************** # 
 

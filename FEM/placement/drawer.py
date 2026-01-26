@@ -1,45 +1,281 @@
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.cm as cm
 import numpy as np
+from .grid import Grid
+from .logger import INFO, WARNING, ERROR
+from ..customized_problem.fpga_placement import get_loss_history, get_placment_history
 
+RECT_WIDTH = 0.6
+RECT_HEIGHT = 0.6
+INSTANCE_WIDTH = 0.5
+INSTANCE_HEIGHT = 0.5
+        
 class PlacementDrawer:
 
-    def __init__(self, bbox, num_subplots=5, debug_mode=False):
-        self.bbox = bbox
-        self.area_width = bbox['area_length']
-        self.area_height = bbox['area_length']
-        self.num_subplots = num_subplots
-        self.debug_mode = debug_mode  # 新增：debug模式标志
+    def __init__(self, placer, num_subplots=5, debug_mode=False):
+        self.placer = placer
+        
+        self.logic_grid: Grid = placer.get_grid('logic')
+        self.io_grid: Grid  = placer.get_grid('io')
+        self._calculate_overall_bbox(False)
+        self.debug_mode = debug_mode
         
         self.site_colors = {
-            'empty_internal': {'face': 'white', 'edge': 'black'},
-            'placed_internal': {'face': 'lightblue', 'edge': 'darkblue'},
-            'empty_boundary': {'face': 'yellow', 'edge': 'black'}, 
-            'placed_boundary': {'face': 'lightgreen', 'edge': 'green'},
-            'text': 'black'
+            'logic_empty': {'face': "#B8B8B8", 'edge': "#555454"},
+            'logic_placed': {'face': '#64B5F6', 'edge': '#1976D2'}, 
+            'io_empty': {'face': '#FFF176', 'edge': '#FFB300'},
+            'io_placed': {'face': '#81C784', 'edge': '#388E3C'},
+            'text': "#282727"                                      
         }
 
         self.wire_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
-
-        self.placement_history = []
-
-        # 关键修改：只有当需要时才创建多子图窗口
-        self.fig = plt.figure(figsize=(8, 6))  # 创建图形但不显示
-        self.ax = self.fig.add_subplot(111)    # 手动添加子图
         
-        # 多子图窗口延迟创建
+        self.fig = plt.figure(figsize=(8, 6))
+        self.ax = self.fig.add_subplot(111)
+        
         self.figs = None
         self.axes = None
-        
-        # 初始化debug接口（如果需要）
+    
         if debug_mode:
             self._init_debug_interface()
+        
+        plt.rcParams['font.family'] = 'Calibri'
+        plt.rcParams['font.size'] = 12
+        plt.rcParams['axes.linewidth'] = 0.8
+        plt.rcParams['axes.edgecolor'] = "#C9C4C4"
+        plt.rcParams['grid.linestyle'] = '--'
+        plt.rcParams['grid.linewidth'] = 0.5
+        plt.rcParams['grid.alpha'] = 0.7
     
+    def _calculate_overall_bbox(self, include_io):
+        all_grids = [self.logic_grid]
+        if include_io:
+            all_grids.append(self.io_grid)
+        
+        min_x = min([grid.start_x for grid in all_grids])
+        max_x = max([grid.end_x for grid in all_grids])
+        min_y = min([grid.start_y for grid in all_grids])
+        max_y = max([grid.end_y for grid in all_grids])
+        
+        self.overall_width = max_x - min_x
+        self.overall_height = max_y - min_y
+        self.offset_x = -min_x
+        self.offset_y = -min_y
+    
+        self.grid_bounds = {}
+        for grid in all_grids:
+            self.grid_bounds[grid.name] = {
+                'start_x': grid.start_x + self.offset_x,
+                'end_x': grid.end_x + self.offset_x,
+                'start_y': grid.start_y + self.offset_y,
+                'end_y': grid.end_y + self.offset_y
+            }
+    
+    def _normalize_coords(self, x, y):
+        return x + self.offset_x, y + self.offset_y
+    
+    def _get_grid_for_position(self, x, y):
+        real_x, real_y = x - self.offset_x, y - self.offset_y
+
+        if self.logic_grid.is_within_bounds(real_x, real_y):
+            return 'logic'
+        
+        if self.io_grid and self.io_grid.is_within_bounds(real_x, real_y):
+            return 'io'
+        
+        return None
+    
+    def setup_plot(self, ax):
+        padding = 2
+        ax.set_xlim(-padding, self.overall_width + padding)
+        ax.set_ylim(-padding, self.overall_height + padding)
+        ax.set_aspect('equal')
+        ax.grid(False)
+        ax.set_xlabel('X Coordinate')
+        ax.set_ylabel('Y Coordinate')
+        
+        # self._draw_grid_boundaries(ax)
+    
+    def _draw_grid_boundaries(self, ax):
+        for grid_name, bounds in self.grid_bounds.items():
+            width = bounds['end_x'] - bounds['start_x'] + 1
+            height = bounds['end_y'] - bounds['start_y'] + 1
+            
+            rect = patches.Rectangle(
+                (bounds['start_x'] - 0.5, bounds['start_y'] - 0.5),
+                width, height,
+                linewidth=3, linestyle='--',
+                edgecolor=self.site_colors[f'{grid_name}_empty']['edge'],
+                facecolor='none', alpha=0.5
+            )
+            ax.add_patch(rect)
+            
+            ax.text(
+                bounds['start_x'] + width/2,
+                bounds['start_y'] + height/2,
+                grid_name.upper(),
+                ha='center', va='center',
+                fontsize=12, fontweight='bold',
+                color=self.site_colors[f'{grid_name}_empty']['edge'],
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
+            )
+    
+    def draw_placement(self, logic_coords, io_coords=None, include_io=False, iteration=0, title_suffix=""):
+        self.ax.clear()
+        self.setup_plot(self.ax)
+        self._draw_all_base_grids(self.ax, include_io)
+        self._draw_instances(self.ax, logic_coords, 'logic', False)
+        
+        if include_io:
+            self._draw_instances(self.ax, io_coords, 'io', False)
+        
+        title = f'Placement - Iteration {iteration}'
+        if title_suffix:
+            title += f' - {title_suffix}'
+        self.ax.set_title(title, fontsize=14)
+        
+        self._add_legend()
+        
+    def _draw_single_grid_base(self, ax, grid, grid_type):
+        for x in range(grid.start_x, grid.end_x + 1):
+            for y in range(grid.start_y, grid.end_y + 1):
+                plot_x, plot_y = self._normalize_coords(x, y)
+                color_config = self.site_colors[f'{grid_type}_empty']
+                
+                rect = patches.Rectangle(
+                    (plot_x - RECT_WIDTH/2, plot_y - RECT_HEIGHT/2), 
+                    RECT_WIDTH, RECT_HEIGHT,
+                    linewidth= 0.5,
+                    edgecolor=color_config['edge'],
+                    facecolor=color_config['face'],
+                    alpha=0.3
+                )
+                ax.add_patch(rect)
+    
+    def _draw_all_base_grids(self, ax, include_io):
+        self._draw_single_grid_base(ax, self.logic_grid, 'logic')
+        
+        if include_io:
+            self._draw_single_grid_base(ax, self.io_grid, 'io')
+        pass
+            
+    def _draw_instances(self, ax, coords, grid_type, label=False):
+        num_instances = coords.shape[0]
+        grid = getattr(self, f'{grid_type}_grid')
+        
+        coord_dict = {}
+        overlapped_coords = set()
+        
+        for i in range(num_instances):
+            x = int(coords[i][0].item()) if torch.is_tensor(coords[i][0]) else int(coords[i][0])
+            y = int(coords[i][1].item()) if torch.is_tensor(coords[i][1]) else int(coords[i][1])
+            
+            if grid.is_within_bounds(x, y):
+                coord_key = (x, y)
+                if coord_key in coord_dict:
+                    coord_dict[coord_key].append(i)
+                    overlapped_coords.add(coord_key)
+                else:
+                    coord_dict[coord_key] = [i]
+            else:
+                WARNING(f'instance {i} with coords {x, y} out of bounds')
+        
+        for i in range(num_instances):
+            x = int(coords[i][0].item()) if torch.is_tensor(coords[i][0]) else int(coords[i][0])
+            y = int(coords[i][1].item()) if torch.is_tensor(coords[i][1]) else int(coords[i][1])
+            
+            if grid.is_within_bounds(x, y):
+                plot_x, plot_y = self._normalize_coords(x, y)
+                coord_key = (x, y)
+            
+                if coord_key in overlapped_coords:
+                    rect = patches.Rectangle(
+                        (plot_x - INSTANCE_WIDTH/2, plot_y - INSTANCE_HEIGHT/2), 
+                        INSTANCE_WIDTH, INSTANCE_HEIGHT,
+                        linewidth=1, edgecolor='red',
+                        facecolor='red', alpha=0.8
+                    )
+                else:
+                    color_config = self.site_colors[f'{grid_type}_placed']
+                    rect = patches.Rectangle(
+                        (plot_x - INSTANCE_WIDTH/2, plot_y - INSTANCE_HEIGHT/2), 
+                        INSTANCE_WIDTH, INSTANCE_HEIGHT,
+                        linewidth=1, edgecolor=color_config['edge'],
+                        facecolor=color_config['face'], alpha=0.8
+                    )
+                
+                ax.add_patch(rect)
+                
+                if label:
+                    label = f'{grid_type[0].upper()}{i}'
+                    ax.text(plot_x, plot_y, label,
+                        ha='center', va='center', fontsize=7,
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+                
+                if coord_key in overlapped_coords and coord_dict[coord_key][0] == i:
+                    overlap_count = len(coord_dict[coord_key])
+                    if overlap_count > 1:
+                        ax.text(plot_x, plot_y, str(overlap_count),
+                               ha='center', va='center',
+                               fontsize=8, fontweight='bold',
+                               color='white')
+    
+    def _add_legend(self):
+        legend_elements = [
+            patches.Patch(facecolor='lightblue', edgecolor='darkblue', label='Logic'),
+            patches.Patch(facecolor='lightgreen', edgecolor='green', label='IO'),
+            patches.Patch(facecolor='red', edgecolor='darkred', label='Overlap')
+        ]
+        
+        self.ax.legend(handles=legend_elements, loc='upper right',
+                      bbox_to_anchor=(0.95, 0.95), fontsize=9)
+    
+    def draw_place_and_route(self, logic_coords, routes, io_coords=None, 
+                             include_io = False, iteration=0, title_suffix=""):
+        self.draw_placement(logic_coords, io_coords, include_io, iteration, title_suffix)
+        self.draw_routing(routes)
+        
+        self.fig.tight_layout()
+        self.fig.canvas.draw()
+        
+        plt.pause(20) 
+        plt.savefig(f'final_placement.png', dpi=150, bbox_inches='tight')
+                
+    def draw_routing(self, routes, alpha=0.7):        
+        weights = [route['weight'] for route in routes]
+        max_weight = max(weights)
+        min_weight = min(weights)
+        greens_cmap = cm.Greens
+        
+        for route in routes:
+            if max_weight > min_weight:
+                normalized_weight = (route['weight'] - min_weight) / (max_weight - min_weight)
+            else:
+                normalized_weight = 0.5
+            color = greens_cmap(0.3 + 0.6 * normalized_weight)
+            
+            linewidth = 0.8 + normalized_weight * 1.2
+            
+            for segment in route['segments']:
+                start_x, start_y = segment['start']
+                end_x, end_y = segment['end']
+                
+                norm_start_x, norm_start_y = self._normalize_coords(start_x, start_y)
+                norm_end_x, norm_end_y = self._normalize_coords(end_x, end_y)
+                
+                self.ax.plot([norm_start_x, norm_end_x], [norm_start_y, norm_end_y], 
+                        color=color, 
+                        linewidth=linewidth, 
+                        alpha=0.5 * alpha,
+                        linestyle='-', 
+                        zorder=0)
+                
     def _init_debug_interface(self):
         print("Debug mode enabled - interface to be implemented")
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
-    
+            
     def _on_key_press(self, event):
         if event.key == 'd' or event.key == 'D':
             print("Debug command received")
@@ -50,289 +286,52 @@ class PlacementDrawer:
             'step': step
         }
         self.placement_history.append(placement_data)
-    
-    def setup_plot(self, ax):
-        ax.set_xlim(-1, self.area_width)
-        ax.set_ylim(-1, self.area_height)
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlabel('X Coordinate')
-        ax.set_ylabel('Y Coordinate')
-    
-    def is_boundary_site(self, x, y):
-        return (x == 0 or x == self.area_width - 1 or 
-                y == 0 or y == self.area_height - 1)
-    
-    def draw_placement_step(self, p, iteration):
-        self.ax.clear()
-        self.setup_plot(self.ax)
-        p_softmax = torch.softmax(p, dim=-1)
-        
-        batch_size, num_instances, num_locations = p_softmax.shape
-        
-        for loc_idx in range(num_locations):
-            x = loc_idx % self.area_width
-            y = loc_idx // self.area_width
-            
-            if y >= self.area_height:
-                continue
-            
-            site_usage = torch.sum(p_softmax[:, :, loc_idx]).item()
-            is_placed = site_usage > 0.1
-            
-            if self.is_boundary_site(x, y):
-                color_config = (self.site_colors['placed_boundary'] if is_placed 
-                              else self.site_colors['empty_boundary'])
-            else:
-                color_config = (self.site_colors['placed_internal'] if is_placed
-                              else self.site_colors['empty_internal'])
-            
-            rect = patches.Rectangle(
-                (x - 0.4, y - 0.4), 0.8, 0.8,
-                linewidth=2,
-                edgecolor=color_config['edge'],
-                facecolor=color_config['face'],
-                alpha=min(1.0, site_usage * 2)
-            )
-            self.ax.add_patch(rect)
-            
-            if site_usage > 0.05:
-                self.ax.text(x, y, f'{site_usage:.2f}', 
-                           ha='center', va='center', 
-                           fontsize=8, color=self.site_colors['text'])
-        
-        stats_text = (f'Iteration: {iteration}\n'
-                     f'Instances: {num_instances}\n')
-        
-        self.ax.text(0.02, 0.98, stats_text, transform=self.ax.transAxes,
-                    verticalalignment='top', fontsize=10,
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        self.add_legend()
-        
-        plt.tight_layout()
-        plt.draw()
-        plt.pause(0.1)
-    
-    def add_legend(self):
-        legend_elements = [
-            patches.Patch(facecolor='white', edgecolor='black', label='Empty Internal'),
-            patches.Patch(facecolor='lightblue', edgecolor='darkblue', label='Placed Internal'),
-            patches.Patch(facecolor='yellow', edgecolor='black', label='Empty Boundary'), 
-            patches.Patch(facecolor='lightgreen', edgecolor='green', label='Placed Boundary')
-        ]
-        
-        self.ax.legend(handles=legend_elements, loc='upper right', 
-                      bbox_to_anchor=(1.0, 0.7))
-    
-    def draw_hard_placement(self, site_coords, iteration, title_suffix=""):
-        self.ax.clear()
-        self.setup_plot(self.ax)
-        
-        num_instances, dim = site_coords.shape
-        
-        for loc_idx in range(self.area_width * self.area_height):
-            x = loc_idx % self.area_width
-            y = loc_idx // self.area_width
-            
-            if y >= self.area_height:
-                continue
-            
-            color_config = (self.site_colors['empty_boundary'] if self.is_boundary_site(x, y)
-                          else self.site_colors['empty_internal'])
-            
-            rect = patches.Rectangle(
-                (x - 0.4, y - 0.4), 0.8, 0.8,
-                linewidth=1, edgecolor=color_config['edge'],
-                facecolor=color_config['face'], alpha=0.3
-            )
-            self.ax.add_patch(rect)
-        
 
-        for i in range(num_instances):
-            x = site_coords[i][0]
-            y = site_coords[i][1]
+    def draw_multi_step_placement(self, save_path=None):
+        step_labels = ['250', '500', '750', '1000']
+        placement_history = get_placment_history()
+        # Create figure with subplots
+        num_plots = len(step_labels)
+        self.figs = plt.figure(figsize=(5 * num_plots, 5))
+        self.axes = []
+        
+        for plot_idx, step_label in enumerate(step_labels):
+            ax = self.figs.add_subplot(1, num_plots, plot_idx + 1)
+            self.axes.append(ax)
+            site_coords = placement_history[plot_idx][0]
+            # Setup plot
             
-            if y < self.area_height:
-                if self.is_boundary_site(x, y):
-                    color_config = self.site_colors['placed_boundary']
-                else:
-                    color_config = self.site_colors['placed_internal']
-                
-                rect = patches.Rectangle(
-                    (x - 0.3, y - 0.3), 0.6, 0.6,
-                    linewidth=3, edgecolor=color_config['edge'],
-                    facecolor=color_config['face'], alpha=0.8
-                )
-                self.ax.add_patch(rect)
-                
-                self.ax.text(x, y, f'I{i}', 
-                            ha='center', va='center', fontsize=7,
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-        
-        title = f'Hard Placement - Iteration {iteration}'
-        if title_suffix:
-            title += f' - {title_suffix}'
-        self.ax.set_title(title)
-    
-    def save_figure(self, filename):
-        plt.savefig(filename, dpi=150, bbox_inches='tight')
-
-    def draw_routing(self, routes, alpha=0.7):
-        if not routes:
-            return
-        
-        weights = [route['weight'] for route in routes]
-        if weights:
-            max_weight = max(weights)
-            min_weight = min(weights)
-            weight_range = max_weight - min_weight if max_weight > min_weight else 1.0
-        else:
-            max_weight = 1.0
-            min_weight = 0.0
-            weight_range = 1.0
-        
-        for route in routes:
-            normalized_weight = (route['weight'] - min_weight) / weight_range
-            normalized_weight = max(0.2, min(1.0, normalized_weight)) 
-            
-            weight_alpha = 0.3 + normalized_weight * 0.5  # [0.3, 0.8]
-            
-            base_linewidth = 1.2
-            linewidth = base_linewidth + normalized_weight * 0.8  # [1.2, 2.0]
-            
-            color_idx = int(route['weight'] * 5) % len(self.wire_colors)
-            color = self.wire_colors[color_idx]
-            
-            for segment in route['segments']:
-                start_x, start_y = segment['start']
-                end_x, end_y = segment['end']
-                
-                self.ax.plot([start_x, end_x], [start_y, end_y], 
-                        color=color, linewidth=linewidth, alpha=weight_alpha,
-                        linestyle='-', marker='', zorder=1) 
-                self.ax.scatter([start_x, end_x], [start_y, end_y], 
-                            color=color, s=15, alpha=weight_alpha * 0.8, zorder=2)
-
-    def draw_complete_placement(self, site_coords, routes, iteration, title_suffix=""):
-        self.draw_hard_placement(site_coords, iteration, title_suffix)
-        self.draw_routing(routes)
-
-        self.fig.tight_layout()
-        self.fig.canvas.draw()
-        plt.pause(10)
-        
-        total_length = sum(route['total_length'] for route in routes)
-        avg_length = total_length / len(routes)
-        
-        routing_text = f'Routes: {len(routes)}\nTotal Length: {total_length:.1f}\nAvg Length: {avg_length:.1f}'
-        self.ax.text(0.02, 0.15, routing_text, transform=self.ax.transAxes,
-                    verticalalignment='top', fontsize=9,
-                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
-    
-    def draw_base_grid(self, ax):
-        for y in range(self.area_height):
-            for x in range(self.area_width):
-                if self.is_boundary_site(x, y):
-                    color_config = self.site_colors['empty_boundary']
-                else:
-                    color_config = self.site_colors['empty_internal']
-                
-                rect = patches.Rectangle(
-                    (x - 0.4, y - 0.4), 0.8, 0.8,
-                    linewidth=1, edgecolor=color_config['edge'],
-                    facecolor=color_config['face'], alpha=0.3
-                )
-                ax.add_patch(rect)
-
-    def draw_multi_step_placement(self):
-        """按需创建多子图窗口，避免冲突"""
-        if not self.placement_history:
-            print("No placement history to show")
-            return
-        
-        # 按需创建多子图窗口（同样使用 plt.figure() 避免自动显示）
-        if self.figs is None or self.axes is None:
-            self.figs = plt.figure(figsize=(5*self.num_subplots, 5))
-            self.axes = []
-            for i in range(self.num_subplots):
-                ax = self.figs.add_subplot(1, self.num_subplots, i+1)
-                self.setup_plot(ax)
-                self.axes.append(ax)
-        
-        for ax in self.axes:
+            real_logic_coords = self.logic_grid.to_real_coords_tensor(site_coords)
             self.setup_plot(ax)
-        
-        for idx in range(self.num_subplots):
-            ax = self.axes[idx]
-            placement_data = self.placement_history[idx]
-            site_coords = placement_data['site_coords']
-            step = placement_data['step']
-            num_instances, _ = site_coords.shape
-            
-            self.draw_base_grid(ax)
-            
-            # 检测重叠的实例
-            coord_dict = {}
-            overlapped_coords = set()
-            
-            # 第一遍：统计每个位置的实例数量
-            for i in range(num_instances):
-                coord = site_coords[i]
-                x, y = coord[0].item(), coord[1].item()
-                
-                if 0 <= x <= self.area_width and 0 <= y <= self.area_height:
-                    coord_key = (x, y)
-                    if coord_key in coord_dict:
-                        coord_dict[coord_key].append(i)
-                        overlapped_coords.add(coord_key)
-                    else:
-                        coord_dict[coord_key] = [i]
-            
-            # 第二遍：绘制实例，重叠的用红色
-            for i in range(num_instances):
-                coord = site_coords[i]
-                x, y = coord[0].item(), coord[1].item()
-                
-                if 0 <= x <= self.area_width and 0 <= y <= self.area_height:
-                    coord_key = (x, y)
-                    
-                    # 检查这个位置是否有重叠
-                    if coord_key in overlapped_coords:
-                        # 重叠的实例使用红色
-                        rect = patches.Rectangle(
-                            (x - 0.3, y - 0.3), 0.6, 0.6,
-                            linewidth=2, edgecolor='red',
-                            facecolor='red', alpha=0.8
-                        )
-                    else:
-                        # 正常的颜色
-                        if self.is_boundary_site(x, y):
-                            color_config = self.site_colors['placed_boundary']
-                        else:
-                            color_config = self.site_colors['placed_internal']
-                        
-                        rect = patches.Rectangle(
-                            (x - 0.3, y - 0.3), 0.6, 0.6,
-                            linewidth=2, edgecolor=color_config['edge'],
-                            facecolor=color_config['face'], alpha=0.8
-                        )
-                    
-                    ax.add_patch(rect)
-                    
-                    # 可以在重叠的位置上添加数字显示重叠数量
-                    if coord_key in overlapped_coords and coord_dict[coord_key][0] == i:
-                        overlap_count = len(coord_dict[coord_key])
-                        if overlap_count > 1:
-                            ax.text(x, y, str(overlap_count), 
-                                ha='center', va='center', 
-                                fontsize=8, fontweight='bold', 
-                                color='white')
-            
-            title = f'Step {step}'
-            ax.set_title(title, fontsize=10)
+            self._draw_all_base_grids(ax, include_io=False)
+            self._draw_instances(ax, real_logic_coords, 'logic', label=False)
+            ax.set_title(f'Step {step_label}', fontsize=12, fontweight='bold')
         
         self.figs.tight_layout()
         self.figs.canvas.draw()
-        plt.show(block=False)  # 非阻塞显示
+        plt.show(block=False)
         plt.pause(5)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        
+    def plot_fpga_placement_loss(self, save_path=None):
+        loss_data = get_loss_history()
+        steps = list(range(len(loss_data['hpwl_losses'])))
+        colors = ["#53D5F9", "#86FAD8", "#DF6FFA"]
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        ax.plot(steps, loss_data['hpwl_losses'], 
+                color=colors[0], linewidth=2, label='HPWL Loss')
+        ax.plot(steps, loss_data['constrain_losses'], 
+                color=colors[1], linewidth=2, label='Constraint Loss')
+        ax.plot(steps, loss_data['total_losses'], 
+                color=colors[2], linewidth=2, label='Total Loss')
+        
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        ax.grid(False)
+        
+        plt.tight_layout()
+        plt.pause(5)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')

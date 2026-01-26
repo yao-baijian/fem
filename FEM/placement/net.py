@@ -12,9 +12,11 @@ class NetManager:
                  get_site_inst_id_by_name_func=None, 
                  get_site_inst_name_by_id_func=None,
                  map_coords_to_instance_func=None,
-                 debug=False):
+                 debug=False,
+                 device = 'cpu'):
 
         self.debug = debug
+        self.device = device
         self.site_to_site_connectivity = {} 
         self.io_to_site_connectivity = {} 
         self.net_to_sites = {}
@@ -30,7 +32,7 @@ class NetManager:
         self.map_coords_to_instance_func = map_coords_to_instance_func
         
         self.debug_src_root = "result/net_manager_debug.txt"
-        self.hpwl_calculator = HPWLCalculator(debug=debug)
+        self.hpwl_calculator = HPWLCalculator(device, debug=debug)
         
     def analyze_design_hpwl(self, design):
         self.hpwl_calculator.clear()
@@ -44,11 +46,12 @@ class NetManager:
         for net in self.nets:
             net_name = net.getName()
             self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, False)
-            
-        total_hpwl, total_hpwl_no_io = self.hpwl_calculator.get_hpwl()
         
+        hpwl = self.hpwl_calculator.get_hpwl()
+        total_hpwl = hpwl['hpwl']
+        total_hpwl_no_io = hpwl['hpwl_no_io']
+        INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
         if self.debug:
-            INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
             self.save_net_debug_info()
 
         return total_hpwl, total_hpwl_no_io
@@ -58,14 +61,7 @@ class NetManager:
         instance_coords = self.map_coords_to_instance_func(coords, io_coords, include_io)       
         for net_name, connected_sites in self.net_to_sites.items():
             self.hpwl_calculator.compute_net_hpwl(net_name, connected_sites, instance_coords, include_io=include_io)
-        
-        total_hpwl, total_hpwl_no_io = self.hpwl_calculator.get_hpwl()
-        
-        if self.debug:
-            INFO(f"Solver hpwl {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f}.")
-            # self.save_solver_hpwl_debug(instance_coords, self.net_to_sites)
-        
-        return total_hpwl, total_hpwl_no_io
+        return self.hpwl_calculator.get_hpwl()
     
     def save_net_debug_info(self, output_path='result/net_debug_info.txt'):
         with open(output_path, 'w') as f:
@@ -151,6 +147,9 @@ class NetManager:
                         self.site_to_nets[site_name] = []
                     self.site_to_nets[site_name].append(net_name)
                 self._record_connectivity(logic_sites, io_sites)
+            else:
+                # WARNING(f'Net {net_name} skipped, logic: {logic_sites}, io: {io_sites}')
+                pass
                 
             if len(logic_sites) >= 2:
                 valid_net_num += 1
@@ -163,6 +162,8 @@ class NetManager:
               f" {len(self.site_to_site_connectivity)} site-to-site routes",
               f" {len(self.io_to_site_connectivity)} io-to-site routes",
               f" {len(self.net_to_sites)} inter-tile routes")
+        
+        return len(self.site_to_site_connectivity), len(self.nets)
     
     def _record_connectivity(self, logic_sites: Set[str], io_sites: Set[str]):
         logic_sites_list = list(logic_sites)
@@ -225,14 +226,13 @@ class NetManager:
                 site_idx.append(instance_idx)
                 self.net_tensor[net_idx, instance_idx] = True
         
-        self.connection_matrix = torch.zeros((optimizable_insts_num, optimizable_insts_num))
-        INFO(f"Net_tensor shape {self.net_tensor.shape}")
+        INFO(f"Net tensor shape {self.net_tensor.shape[0]} x {self.net_tensor.shape[1]}")
         
     def _create_net_matrix(self, optimizable_insts_num, available_sites_num, fixed_insts_num):        
         n = optimizable_insts_num
         m = available_sites_num
         k = fixed_insts_num
-        self.insts_matrix = torch.zeros((n, n))
+        self.insts_matrix = torch.zeros((n, n), device=self.device)
 
         for source_site, connections in self.site_to_site_connectivity.items():
             source_id = self.get_site_inst_id_by_name_func(source_site)
@@ -246,7 +246,7 @@ class NetManager:
             else:
                 ERROR(f'Cannot find site source id {source_site}')
 
-        self.io_insts_matrix = torch.zeros((n + k, n + k))
+        self.io_insts_matrix_all = torch.zeros((n + k, n + k), device=self.device)
 
         for source_site, connections in self.io_to_site_connectivity.items():
             source_id = self.get_site_inst_id_by_name_func(source_site)
@@ -254,11 +254,13 @@ class NetManager:
                 for target_site, connection_count in connections.items():
                     target_id = self.get_site_inst_id_by_name_func(target_site)
                     if target_id is not None:
-                        self.io_insts_matrix[source_id, target_id] = connection_count
+                        self.io_insts_matrix_all[source_id, target_id] = connection_count
                     else:
                         ERROR(f'Cannot find site target id {target_id}')
             else:
                 ERROR(f'Cannot find site source id {source_site}')
+            
+        self.io_insts_matrix =  self.io_insts_matrix_all[0:n, n:n+k]
         
         INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
 

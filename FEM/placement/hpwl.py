@@ -4,8 +4,7 @@ from .logger import INFO, WARNING, ERROR
 
 class HPWLCalculator:
 
-    def __init__(self, debug=False):
-        self.name = "HPWL-Calculator"
+    def __init__(self, device, debug=False):
         self.net_hpwl = {}
         self.net_bbox = {}
         self.net_hpwl_no_io = {}
@@ -16,12 +15,15 @@ class HPWLCalculator:
         
         self.nets = []
         self.net_names = []
-        
+        self.device = device
         self.debug = debug
         pass
     
     def get_hpwl(self):
-        return self.total_hpwl, self.total_hpwl_no_io
+        return {
+            'hpwl': self.total_hpwl,
+            'hpwl_no_io': self.total_hpwl_no_io
+            }
     
     def clear(self):
         self.total_hpwl = 0.0

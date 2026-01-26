@@ -1,39 +1,29 @@
 import torch
-
-# TODO need better routing algorithm or vivado routing API
+from typing import Tuple, List, Dict
+from .grid import Grid
 
 class Router:
-
-    def __init__(self, bbox):
-        self.area_width = bbox["area_length"]
-        self.area_height = bbox["area_length"]
+    def __init__(self, placer):
+        self.placer = placer
         
-    def route_connections(self, site_to_site_connect_matrix, coordinates):
-        batch_size, num_instances, _ = coordinates.shape
-        J = torch.tensor(site_to_site_connect_matrix, dtype=torch.float32)
+    def route_connections(self, connect_matrix, all_coords):
+        J = torch.tensor(connect_matrix, dtype=torch.float32, 
+                device=all_coords.device)
+        rows, cols = torch.nonzero(J, as_tuple=True)
         
-        all_routes = []
+        routes = []
         
-        for b in range(batch_size):
-            batch_routes = []
-            batch_coords = coordinates[b]  # [num_instances, 2]
-            
-            rows, cols = torch.nonzero(J, as_tuple=True)
-            
-            for i, j in zip(rows, cols):
-                if i >= num_instances or j >= num_instances:
-                    continue
-                    
-                if i < j:
-                    route = self._manhattan_route(
-                        batch_coords[i], batch_coords[j], connection_weight=J[i, j].item()
-                    )
-                    if route:
-                        batch_routes.append(route)
-            
-            all_routes.append(batch_routes)
+        for i, j in zip(rows, cols):
+            if i < j:
+                route = self._manhattan_route(
+                    all_coords[i], 
+                    all_coords[j], 
+                    J[i, j].item()
+                )
+                if route:
+                    routes.append(route)
         
-        return all_routes
+        return routes
     
     def _manhattan_route(self, start, end, connection_weight=1.0):
         start_x, start_y = start[0].item(), start[1].item()
@@ -49,10 +39,9 @@ class Router:
                 'weight': connection_weight
             })
         
-        # Y方向布线
         if start_y != end_y:
             route_segments.append({
-                'type': 'vertical', 
+                'type': 'vertical',
                 'start': (end_x, start_y),
                 'end': (end_x, end_y),
                 'weight': connection_weight
@@ -65,5 +54,3 @@ class Router:
             'total_length': abs(start_x - end_x) + abs(start_y - end_y),
             'weight': connection_weight
         }
-
-    

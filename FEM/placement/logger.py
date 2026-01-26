@@ -27,7 +27,6 @@ class Logger:
         return cls._instance
     
     def _set_level(self, level: str):
-        """设置日志级别"""
         level = level.upper()
         if level in self._log_levels:
             self.level = level

@@ -151,7 +151,6 @@ class OptimizationProblem:
             imbalance_weight=5.0, 
             epsilon=0.03,
             q=2,
-            io_site_connect_matrix=None,
             hyperedge=None,
             fpga_wrapper=None,
             discretization=False,
@@ -169,8 +168,7 @@ class OptimizationProblem:
         self.hyperedge = hyperedge
 
 # **********************************   Start   *********************************** # 
-        self.fpga_wrapper = fpga_wrapper                                    # rapidwright design object
-        self.io_site_connect_matrix = io_site_connect_matrix                # IO site connectivity matrix
+        self.fpga_wrapper = fpga_wrapper 
 # **********************************    End    *********************************** # 
 
         self.discretization = discretization
@@ -210,11 +208,13 @@ class OptimizationProblem:
             self.coupling_matrix = self.coupling_matrix.repeat(1, num_trials, 1, 1)
 
 # **********************************   Start   *********************************** # 
-        if self.problem_type == 'fpga_placement':                                   # store site coordinates matrix
+        if self.problem_type == 'fpga_placement':                                  
             self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor      # Net to slice sites mapping tensor
-            self.bbox_length = self.fpga_wrapper.bbox['area_length']          # FPGA layout boundary size 
-            self.site_coords_matrix = get_site_coords_all(self.bbox_length ** 2, self.bbox_length) # All site coordinates matrix
-            self.best_hpwl = torch.full((10,), float('inf'))        # Track best HPWL history
+            self.io_site_connect_matrix = self.fpga_wrapper.net_manager.io_insts_matrix
+            self.site_coords = self.fpga_wrapper.logic_site_coords
+            self.io_site_coords = self.fpga_wrapper.io_site_coords
+            self.bbox_length = self.fpga_wrapper.grids['logic'].area_length
+            self.constraint_weight = self.fpga_wrapper.constraint_weight
             return
 # **********************************    End   ************************************ #
         
@@ -248,8 +248,10 @@ class OptimizationProblem:
         
 # **********************************   Start   *********************************** #
         elif self.problem_type == 'fpga_placement':
-            # return expected_fpga_placement_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            return expected_fpga_placement(self.coupling_matrix, p, self.io_site_connect_matrix, self.site_coords_matrix, self.net_sites_tensor, self.best_hpwl)
+            if self.fpga_wrapper.with_io():
+                return expected_fpga_placement_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.site_coords, self.io_site_coords)
+            else:
+                return expected_fpga_placement(self.coupling_matrix, p, self.site_coords, step, self.bbox_length, self.constraint_weight)
 # **********************************    End    *********************************** #
           
         elif self.problem_type == 'customize':
@@ -273,7 +275,7 @@ class OptimizationProblem:
 
 # **********************************   Start   *********************************** #
         elif self.problem_type == 'fpga_placement':
-            return
+            return manual_grad_placement(p, self.coupling_matrix, self.site_coords)
 # **********************************    END    *********************************** #
 
         elif self.problem_type == 'customize':
@@ -282,7 +284,7 @@ class OptimizationProblem:
     
     def inference_value(self, p):
         if (self.problem_type != 'fpga_placement'):
-            p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0])
+            p = torch.vstack([pi for pi in p if torch.isnan(pi).sum() == 0]) 
         if self.problem_type == 'maxcut':
             config, result = infer_maxcut(self.coupling_matrix, p)
         elif self.problem_type == 'bmincut':
@@ -296,8 +298,10 @@ class OptimizationProblem:
 
 # **********************************   Start   *********************************** #
         elif self.problem_type == 'fpga_placement':
-            # config, result = infer_placements_xy(self.coupling_matrix, p_x=p[0], p_y=p[1])
-            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix, self.net_sites_tensor)
+            if self.fpga_wrapper.with_io():
+                config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords, self.io_site_coords)
+            else:
+                config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords)
 # **********************************    END    *********************************** #
 
         elif self.problem_type == 'customize':
