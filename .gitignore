@@ -167,3 +167,5 @@ cython_debug/
 vivado/*
 .Xil/
 uv.lock
+
+result/*
