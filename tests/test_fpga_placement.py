@@ -21,7 +21,7 @@ from fem_placer.utils import parse_fpga_design
 
 # Configuration
 num_trials = 10
-num_steps = 1000
+num_steps = 2000
 dev = 'cpu'
 
 # Initialize FPGA placer
@@ -59,7 +59,7 @@ global_drawer = PlacementDrawer(bbox=fpga_wrapper.bbox)
 optimizer_joint = FPGAPlacementOptimizerJoint(
     num_inst=num_inst,
     coupling_matrix=J,
-    drawer=global_drawer,
+    drawer=None,
     visualization_steps=[0, 250, 500, 750, 999],
     constraint_weight=1.0
 )

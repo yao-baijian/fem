@@ -169,3 +169,5 @@ vivado/*
 uv.lock
 
 result/*
+
+.claude
