@@ -19,6 +19,7 @@ dependencies = [
   "matplotlib",
   "rapidwright>=2025.2.0",
   "pandas>=2.3.3",
+  "simulated-bifurcation>=2.0.0",
 ]
 
 [project.optional-dependencies]

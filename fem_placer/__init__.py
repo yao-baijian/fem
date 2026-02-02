@@ -11,6 +11,7 @@ from .legalizer import Legalizer
 from .router import Router
 from .optimizer import FPGAPlacementOptimizerJoint
 from .timer import Timer
+from .solver_sb import SBSolver, SBPlacementSolver
 
 # Joint distribution approach (grid_width/grid_height based)
 from .objectives import (
@@ -68,6 +69,8 @@ __all__ = [
     'Router',
     'FPGAPlacementOptimizerJoint',
     'Timer',
+    'SBSolver',
+    'SBPlacementSolver',
 
     # Joint distribution functions
     'expected_fpga_placement_joint',
