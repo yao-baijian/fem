@@ -20,12 +20,11 @@ class FpgaPlacer:
 
         self.slice_site_enum = [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
 
-        self.io_site_enum = [SiteTypeEnum.HPIOB, 
-                             SiteTypeEnum.HRIO, 
-                             SiteTypeEnum.BITSLICE_COMPONENT_RX_TX,
-                             SiteTypeEnum.BUFGCE]
-        
-        self.clock_site_enum = [SiteTypeEnum.BUFGCE] # NOT USED NOW
+        # Only true IO pads - matches master branch
+        self.io_site_enum = [SiteTypeEnum.HPIOB,
+                             SiteTypeEnum.HRIO]
+
+        self.clock_site_enum = [SiteTypeEnum.BUFGCE]  # NOT USED NOW
 
         self.utilization_factor = utilization_factor
         self.num_optimizable_insts = 0
@@ -163,46 +162,35 @@ class FpgaPlacer:
             self.available_id_to_site[idx] = site_name
 
     def init_place_areas(self, design):
-        
+
         total_site_insts = len(design.getSiteInsts())
         other_sites = total_site_insts - (len(self.optimizable_insts) + len(self.fixed_insts))
 
         print(f"INFO, estimate sites number: {len(self.optimizable_insts)} slice sites, {len(self.fixed_insts)} fixed sites, {other_sites} other sites, total {total_site_insts} sites.")
-        
-        side_length = int(np.ceil(np.sqrt(total_site_insts / self.utilization_factor)))
-        side_width = 0
-        
-        min_x = min(site.getInstanceX() for site in self.available_slices_ml)
-        max_x = max(site.getInstanceX() for site in self.available_slices_ml)
-        min_y = min(site.getInstanceY() for site in self.available_slices_ml)
-        max_y = max(site.getInstanceY() for site in self.available_slices_ml)
 
-        device_center_x = (min_x + max_x) // 2
-        device_center_y = (min_y + max_y) // 2
-        
-        start_x = device_center_x - side_length // 2
-        end_x = device_center_x + side_length // 2
-        start_y = device_center_y - side_length // 2
-        end_y = device_center_y + side_length // 2
-        
-        start_x = max(0, start_x)
-        start_y = max(0, start_y)
-        end_x = min(max_x, end_x)
-        end_y = min(max_y, end_y)
-        
+        # IMPORTANT: Use only optimizable instances for grid calculation (matches master branch)
+        area_length = int(np.ceil(np.sqrt(len(self.optimizable_insts) / self.utilization_factor)))
+        area_height = area_length  # Square grid
+
+        # Match master's coordinate system: centered y-axis
+        start_x = 0
+        end_x = start_x + area_length
+        start_y = 0 - area_height // 2  # Centered around 0
+        end_y = start_y + area_height
+
         self.bbox = {
             'start_x': start_x,
             'end_x': end_x,
             'start_y': start_y,
             'end_y': end_y,
             'estimated_sites': total_site_insts,
-            'area_length': side_length,
-            'area_width': side_width,
-            'area_size': side_length * side_length,
-            'utilization': total_site_insts / (side_length * side_length) if side_length > 0 else 0
+            'area_length': area_length,
+            'area_width': area_height,
+            'area_size': area_length * area_height,
+            'utilization': len(self.optimizable_insts) / (area_length * area_height) if area_height > 0 else 0
         }
-        
-        print(f"INFO: estimate area {side_length} x {side_length} , start=({start_x},{start_y}), end=({end_x},{end_y})")
+
+        print(f"INFO: estimate area {area_length} x {area_height} , start=({start_x},{start_y}), end=({end_x},{end_y})")
 
     def _init_io_area(self):
         num_pins = len(self.fixed_insts)
@@ -461,6 +449,97 @@ class FpgaPlacer:
         self.record_site_connectivity()
         self.random_initial_placement(design)
 
+        # Initialize NetManager using master's exact implementation
+        from .net import NetManager
+        self.net_manager = NetManager(
+            get_site_inst_id_by_name_func=self.get_site_inst_id_by_name,
+            get_site_inst_name_by_id_func=self.get_site_inst_name_by_id,
+            map_coords_to_instance_func=self._map_coords_to_instance,
+            debug=False,
+            device='cpu'
+        )
+        # Set the attributes that master expects
+        self.net_manager.nets = self.nets
+        self.net_manager.net_to_sites = self.net_to_sites
+
+        # Build site_to_nets mapping (inverse of net_to_sites)
+        for net_name, sites in self.net_to_sites.items():
+            for site_name in sites:
+                if site_name not in self.net_manager.site_to_nets:
+                    self.net_manager.site_to_nets[site_name] = []
+                self.net_manager.site_to_nets[site_name].append(net_name)
+
+        # Create net_tensor for global optimization (matches master branch)
+        # net_tensor is a [num_valid_nets, num_instances] boolean tensor
+        sites_net_list = []
+        for net_name, connected_sites in self.net_to_sites.items():
+            # Only include nets with 2+ logic sites (matching master's filtering)
+            logic_sites = set()
+            for site_name in connected_sites:
+                site_id = self.get_site_inst_id_by_name(site_name)
+                if site_id is not None and site_id < len(self.optimizable_insts):
+                    logic_sites.add(site_name)
+            if len(logic_sites) >= 2:
+                sites_net_list.append(logic_sites)
+
+        num_valid_nets = len(sites_net_list)
+        num_instances = len(self.optimizable_insts)
+        self.net_manager.net_tensor = torch.zeros(num_valid_nets, num_instances, dtype=torch.bool)
+
+        for net_idx, sites in enumerate(sites_net_list):
+            for site_name in sites:
+                instance_idx = self.get_site_inst_id_by_name(site_name)
+                if instance_idx is not None and instance_idx < num_instances:
+                    self.net_manager.net_tensor[net_idx, instance_idx] = True
+
+        print(f"INFO: Net tensor shape {self.net_manager.net_tensor.shape[0]} x {self.net_manager.net_tensor.shape[1]}")
+
+        # Build connectivity matrices like master
+        self._build_connectivity_matrices()
+
+    def _map_coords_to_instance(self, coords, io_coords=None, include_io=False):
+        """Map coordinates to instance names (matches master branch exactly)."""
+        instance_coords = {}
+
+        # Map logic instances - store coords directly like master
+        for instance_id in range(len(coords)):
+            site_name = self.get_site_inst_name_by_id(instance_id)
+            instance_coords[site_name] = coords[instance_id]
+
+        # Map IO instances
+        if include_io and io_coords is not None:
+            for instance_id in range(len(io_coords)):
+                site_name = self.get_site_inst_name_by_id(instance_id + self.num_optimizable_insts)
+                instance_coords[site_name] = io_coords[instance_id]
+
+        return instance_coords
+
+    def _build_connectivity_matrices(self):
+        """Build connectivity matrices for optimization (matches master branch)."""
+        # This is a placeholder - matrices are built in parse_fpga_design
+        pass
+
+    def get_grid(self, grid_type: str):
+        """
+        Get Grid object for specified grid type.
+
+        Args:
+            grid_type: 'logic', 'io', or 'clock'
+
+        Returns:
+            Grid object for the specified type
+        """
+        from .grid import Grid
+
+        if grid_type == 'logic':
+            return Grid('logic', self.bbox)
+        elif grid_type == 'io':
+            return Grid('io', self.io_area)
+        elif grid_type == 'clock':
+            return Grid('clock', self.clock_area)
+        else:
+            raise ValueError(f"Unknown grid type: {grid_type}. Must be 'logic', 'io', or 'clock'")
+
     def estimate_hpwl(self, design):
         self.total_hpwl = 0.0
         self.net_hpwl.clear()
@@ -497,28 +576,29 @@ class FpgaPlacer:
 
         if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
             return 0.0, {}
-        
+
         pins = net.getPins()
         if len(pins) < 2:
             return 0.0, {}
-        
-        coordinates = []
+
+        # Use set to deduplicate coordinates (multiple pins at same site/tile)
+        coordinates_set = set()
         for pin in pins:
 
             if not include_io and pin.getSiteInst().getSiteTypeEnum() in self.io_site_enum:
                 # print("pin: ", pin.getName(), " type: ", pin.getSiteInst().getSiteTypeEnum())
                 continue
-    
-            tile = pin.getTile()
-            col = tile.getColumn()
-            row = tile.getRow()
-            # print(f"pin: {pin.getName()}, site: {pin.getSiteInst().getName()}, site x: {pin.getSiteInst().getInstanceX()}, site y: {pin.getSiteInst().getInstanceY()} tile: {tile.getName()}, col: {col}, row: {row}")
-            coordinates.append((col, row))
 
-        if len(coordinates) < 2:
+            # Use site instance coordinates for more accurate HPWL
+            site_inst = pin.getSiteInst()
+            coord = (site_inst.getInstanceX(), site_inst.getInstanceY())
+            # print(f"pin: {pin.getName()}, site: {pin.getSiteInst().getName()}, site x: {site_inst.getInstanceX()}, site y: {site_inst.getInstanceY()}")
+            coordinates_set.add(coord)
+
+        if len(coordinates_set) < 2:
             return 0.0, {}
 
-        return self._calculate_hpwl_from_coordinates(coordinates)
+        return self._calculate_hpwl_from_coordinates(list(coordinates_set))
     
     def _calculate_hpwl_from_coordinates(self, coordinates):
         x_coords = [coord[0] for coord in coordinates]
@@ -539,23 +619,35 @@ class FpgaPlacer:
         return hpwl, bbox
 
     def estimate_solver_hpwl(self, coords, io_coords, include_io=True):
+        """
+        Estimate HPWL from solver output coordinates.
+
+        Args:
+            coords: Logic instance coordinates [num_inst, 2]
+            io_coords: IO instance coordinates [num_io, 2] or None
+            include_io: Whether to include IO in HPWL calculation
+
+        Returns:
+            Dictionary with 'hpwl' (total) and 'hpwl_no_io' values
+        """
+        # Calculate total HPWL (with IO)
         self.total_hpwl = 0.0
         self.net_hpwl.clear()
         self.net_bbox.clear()
-        
+
         instance_coords = {}
         for instance_id in range(len(coords)):
             site_name = self.get_site_inst_name_by_id(instance_id)
             instance_coords[site_name] = coords[instance_id]
 
-        if include_io:
+        if include_io and io_coords is not None:
             for instance_id in range(len(io_coords)):
                 site_name = self.get_site_inst_name_by_id(instance_id + self.num_optimizable_insts)
                 instance_coords[site_name] = io_coords[instance_id]
-        
+
         skipped = 0
         for net_name, connected_sites in self.net_to_sites.items():
-            hpwl, bbox = self._calculate_net_hpwl_from_instance_coords(net_name, connected_sites, instance_coords)
+            hpwl, bbox = self._calculate_net_hpwl_from_instance_coords(net_name, connected_sites, instance_coords, include_io=True)
 
             if (hpwl == 0.0):
                 skipped += 1
@@ -564,24 +656,40 @@ class FpgaPlacer:
             self.net_hpwl[net_name] = hpwl
             self.net_bbox[net_name] = bbox
             self.total_hpwl += hpwl
-        
-        print(f"INFO: total {len(self.net_to_sites)} nets, skipped {skipped} nets.")
-        
-        return self.total_hpwl
+
+        # Calculate HPWL without IO
+        self.total_hpwl_no_io = 0.0
+        self.net_hpwl_no_io.clear()
+        self.net_bbox_no_io.clear()
+
+        for net_name, connected_sites in self.net_to_sites.items():
+            hpwl, bbox = self._calculate_net_hpwl_from_instance_coords(net_name, connected_sites, instance_coords, include_io=False)
+
+            if (hpwl == 0.0):
+                continue
+
+            self.net_hpwl_no_io[net_name] = hpwl
+            self.net_bbox_no_io[net_name] = bbox
+            self.total_hpwl_no_io += hpwl
+
+        return {'hpwl': self.total_hpwl, 'hpwl_no_io': self.total_hpwl_no_io}
     
     def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords, include_io=True):
         coordinates = []
         # print(f'INFO: connected sites: {connected_sites}')
         for site_name in connected_sites:
             if site_name in instance_coords:
+                # Skip IO sites if include_io=False
+                if not include_io and site_name in self.fixed_insts:
+                    continue
                 coordinates.append(instance_coords[site_name])
             else:
                 # print(f"Warning: site {site_name} not found in instance coordinates for net {net_name}")
                 pass
-        
+
         if len(coordinates) < 2:
             return 0.0, {}
-        
+
         return self._calculate_hpwl_from_coordinates(coordinates)
     
     # def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords):

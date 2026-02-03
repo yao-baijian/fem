@@ -1,11 +1,15 @@
 """
-Objective functions for FPGA placement optimization.
+Objective functions for FPGA placement optimization using QUBO formulation.
 
-This module provides loss functions for:
-1. Joint distribution approach - where each cell has a probability distribution over all 2D grid positions
-2. QUBO-based approach - using coupling matrices and site coordinate matrices
+This module provides loss functions and inference methods for FPGA placement
+using the QUBO (Quadratic Unconstrained Binary Optimization) approach with
+site coordinate matrices.
 
-The QUBO-based functions use site_coords_matrix while joint functions use grid_width/grid_height.
+Key functions:
+- HPWL loss calculation (get_hpwl_loss_qubo)
+- Constraint loss for preventing overlaps (get_constraints_loss)
+- Expected placement with free energy minimization (expected_fpga_placement)
+- Inference for extracting final placements (infer_placements)
 """
 
 import torch
@@ -164,7 +168,7 @@ def get_hpwl_loss_qubo(J, p, site_coords_matrix):
     Returns:
         total_wirelength: Total wirelength for each batch [batch_size]
     """
-    batch_size, num_instances, num_sites = p.shape
+    _, num_instances, _ = p.shape
 
     # Distance matrix between sites
     coords_i = site_coords_matrix.unsqueeze(1)
@@ -254,11 +258,7 @@ def get_constraints_loss(p):
     Returns:
         site_constraint: Constraint loss for each batch [batch_size]
     """
-    _, num_instance, num_sites = p.shape
-
     site_usage = torch.sum(p, dim=1)
-
-    expected_usage_per_site = float(num_instance) / num_sites
     site_constraint = torch.sum(30 * Func.softplus(site_usage - 1)**2, dim=1)
     return site_constraint
 
@@ -346,7 +346,7 @@ def manual_grad_placement(p, J, site_coords_matrix, lambda_constraint=30.0):
     Returns:
         dE_dh: Gradient [batch_size, num_instances, num_sites]
     """
-    batch_size, N, M = p.shape
+    batch_size, N, _ = p.shape
 
     # Distance matrix
     coords_i = site_coords_matrix.unsqueeze(1)
@@ -444,7 +444,7 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
 
 def infer_placements(J, p, area_width, site_coords_matrix):
     """
-    Infer final placements from probability distribution.
+    Infer final placements from probability distribution (matches master exactly).
 
     Args:
         J: Coupling matrix [num_instances, num_instances]
@@ -456,6 +456,7 @@ def infer_placements(J, p, area_width, site_coords_matrix):
         inst_coords: Instance coordinates [batch_size, num_instances, 2]
         hpwl: HPWL values [batch_size]
     """
+    # IMPORTANT: Must match master's implementation exactly
     inst_indices = torch.argmax(p, dim=2)
     inst_coords = get_inst_coords_from_index(inst_indices, area_width)
     result = get_hpwl_loss_qubo(J, p, site_coords_matrix)
@@ -485,176 +486,3 @@ def infer_placements_with_io(J_LL, J_LI, p_logic, p_io, area_width, logic_site_c
     io_inst_coords = get_io_coords_from_index(io_inst_indices)
     result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords_matrix, io_site_coords_matrix)
     return [logic_inst_coords, io_inst_coords], result
-
-
-# =============================================================================
-# Joint Distribution Functions (Original xw/refactor approach)
-# =============================================================================
-
-def get_grid_coords_joint(grid_width: int, grid_height: int, device='cpu'):
-    """
-    Get coordinate matrix for all grid positions.
-
-    Args:
-        grid_width: Grid width
-        grid_height: Grid height
-        device: Torch device
-
-    Returns:
-        coords: [grid_width * grid_height, 2] coordinate matrix
-    """
-    num_positions = grid_width * grid_height
-
-    # Create coordinate matrix
-    x_coords = torch.arange(grid_width, device=device, dtype=torch.float32)
-    y_coords = torch.arange(grid_height, device=device, dtype=torch.float32)
-
-    # Create meshgrid
-    yy, xx = torch.meshgrid(y_coords, x_coords, indexing='ij')
-
-    # Flatten and stack
-    coords = torch.stack([xx.flatten(), yy.flatten()], dim=1)  # [num_positions, 2]
-
-    return coords
-
-
-def get_placements_from_joint_st(p, grid_width, grid_height):
-    """
-    Convert joint probability distribution to placements using straight-through estimator.
-
-    Args:
-        p: Joint probability [batch_size, num_instances, num_positions]
-        grid_width: Grid width
-        grid_height: Grid height
-
-    Returns:
-        coords: Placement coordinates [batch_size, num_instances, 2]
-    """
-    # Get coordinate matrix
-    coord_matrix = get_grid_coords_joint(grid_width, grid_height, device=p.device)  # [num_positions, 2]
-
-    # Hard placement (discrete, for forward pass)
-    with torch.no_grad():
-        position_indices = torch.argmax(p, dim=2)  # [batch_size, num_instances]
-        hard_coords = coord_matrix[position_indices]  # [batch_size, num_instances, 2]
-
-    # Soft placement (continuous, for gradient)
-    expected_coords = torch.matmul(p, coord_matrix)  # [batch_size, num_instances, 2]
-
-    # Straight-through: forward uses hard, backward uses soft
-    straight_coords = expected_coords + (hard_coords - expected_coords).detach()
-
-    return straight_coords
-
-
-def get_hpwl_loss_joint(J, p, grid_width, grid_height):
-    """
-    Calculate HPWL loss from joint probability distribution.
-
-    Args:
-        J: Coupling matrix [num_instances, num_instances]
-        p: Joint probability distribution [batch_size, num_instances, num_positions]
-        grid_width: Grid width
-        grid_height: Grid height
-
-    Returns:
-        hpwl_loss: HPWL loss for each trial [batch_size]
-    """
-    batch_size, num_instances, num_positions = p.shape
-
-    # Get expected placements using straight-through estimator
-    expected_coords = get_placements_from_joint_st(p, grid_width, grid_height)
-
-    # Calculate pairwise Manhattan distances
-    coords_i = expected_coords.unsqueeze(2)  # [batch_size, num_instances, 1, 2]
-    coords_j = expected_coords.unsqueeze(1)  # [batch_size, 1, num_instances, 2]
-
-    manhattan_dist = torch.sum(torch.abs(coords_i - coords_j), dim=-1)  # [batch_size, num_instances, num_instances]
-
-    # Weight by coupling matrix
-    weighted_dist = manhattan_dist * J.unsqueeze(0)  # [batch_size, num_instances, num_instances]
-
-    # Only count upper triangular (avoid double counting)
-    triu_mask = torch.triu(torch.ones_like(J), diagonal=1).bool()
-    weighted_dist_triu = weighted_dist[:, triu_mask]  # [batch_size, num_pairs]
-
-    # Sum to get total wirelength
-    total_wirelength = torch.sum(weighted_dist_triu, dim=1)  # [batch_size]
-
-    return total_wirelength
-
-
-def get_constraints_loss_joint(p, grid_width, grid_height):
-    """
-    Calculate constraint loss to prevent overlapping placements.
-
-    Args:
-        p: Joint probability distribution [batch_size, num_instances, num_positions]
-        grid_width: Grid width
-        grid_height: Grid height
-
-    Returns:
-        constraint_loss: Constraint loss for each trial [batch_size]
-    """
-    batch_size, num_instances, num_positions = p.shape
-
-    # Calculate position usage: sum probability across all instances
-    position_usage = torch.sum(p, dim=1)  # [batch_size, num_positions]
-
-    # Target usage: each position should have on average num_instances / num_positions usage
-    target_usage = num_instances / num_positions
-
-    # Penalize positions that are over-utilized
-    # Using softplus to make it differentiable and smooth
-    excess_usage = position_usage - target_usage
-    constraint_loss = torch.sum(Func.softplus(10 * excess_usage ** 2), dim=1)  # [batch_size]
-
-    return constraint_loss
-
-
-def expected_fpga_placement_joint(J: torch.Tensor, p: torch.Tensor, grid_width: int, grid_height: int):
-    """
-    Calculate expected placement loss (HPWL + constraints).
-
-    Args:
-        J: Coupling matrix [num_instances, num_instances]
-        p: Joint probability distribution [batch_size, num_instances, num_positions]
-        grid_width: Grid width
-        grid_height: Grid height
-
-    Returns:
-        hpwl_loss: HPWL loss [batch_size]
-        constraint_loss: Constraint loss [batch_size]
-    """
-    hpwl_loss = get_hpwl_loss_joint(J, p, grid_width, grid_height)
-    constraint_loss = get_constraints_loss_joint(p, grid_width, grid_height)
-
-    return hpwl_loss, constraint_loss
-
-
-def infer_placements_joint(J, p, grid_width, grid_height):
-    """
-    Infer final placement from joint probability distribution.
-
-    Args:
-        J: Coupling matrix [num_instances, num_instances]
-        p: Joint probability distribution [batch_size, num_instances, num_positions]
-        grid_width: Grid width
-        grid_height: Grid height
-
-    Returns:
-        coords: Placement coordinates [batch_size, num_instances, 2]
-        hpwl: HPWL values [batch_size]
-    """
-    # Get hard placements (argmax)
-    position_indices = torch.argmax(p, dim=2)  # [batch_size, num_instances]
-
-    # Convert to coordinates
-    x_coords = (position_indices % grid_width).float()
-    y_coords = (position_indices // grid_width).float()
-    coords = torch.stack([x_coords, y_coords], dim=2)  # [batch_size, num_instances, 2]
-
-    # Calculate HPWL for these placements
-    hpwl = get_hpwl_loss_joint(J, p, grid_width, grid_height)
-
-    return coords, hpwl

@@ -2,26 +2,16 @@
 FPGA Placement Package
 
 This package provides FPGA placement functionality using the FEM framework.
-It uses FEM's customize interface to implement FPGA-specific objectives and constraints.
+Uses QUBO formulation for placement optimization.
 """
 
 from .placer import FpgaPlacer
 from .drawer import PlacementDrawer
 from .legalizer import Legalizer
 from .router import Router
-from .optimizer import FPGAPlacementOptimizerJoint
+from .optimizer import FPGAPlacementOptimizer
 from .timer import Timer
 from .solver_sb import SBSolver, SBPlacementSolver
-
-# Joint distribution approach (grid_width/grid_height based)
-from .objectives import (
-    expected_fpga_placement_joint,
-    infer_placements_joint,
-    get_hpwl_loss_joint,
-    get_constraints_loss_joint,
-    get_grid_coords_joint,
-    get_placements_from_joint_st,
-)
 
 # QUBO approach (site_coords_matrix based)
 from .objectives import (
@@ -67,18 +57,10 @@ __all__ = [
     'PlacementDrawer',
     'Legalizer',
     'Router',
-    'FPGAPlacementOptimizerJoint',
+    'FPGAPlacementOptimizer',
     'Timer',
     'SBSolver',
     'SBPlacementSolver',
-
-    # Joint distribution functions
-    'expected_fpga_placement_joint',
-    'infer_placements_joint',
-    'get_hpwl_loss_joint',
-    'get_constraints_loss_joint',
-    'get_grid_coords_joint',
-    'get_placements_from_joint_st',
 
     # QUBO functions
     'get_inst_coords_from_index',

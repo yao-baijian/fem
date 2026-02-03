@@ -5,7 +5,7 @@ import matplotlib.cm as cm
 import numpy as np
 from .grid import Grid
 from .logger import INFO, WARNING, ERROR
-from ..customized_problem.fpga_placement import get_loss_history, get_placment_history
+from .objectives import get_loss_history, get_placement_history
 
 RECT_WIDTH = 0.6
 RECT_HEIGHT = 0.6
@@ -16,31 +16,34 @@ class PlacementDrawer:
 
     def __init__(self, placer, num_subplots=5, debug_mode=False):
         self.placer = placer
-        
+
         self.logic_grid: Grid = placer.get_grid('logic')
         self.io_grid: Grid  = placer.get_grid('io')
         self._calculate_overall_bbox(False)
         self.debug_mode = debug_mode
-        
+
         self.site_colors = {
             'logic_empty': {'face': "#B8B8B8", 'edge': "#555454"},
-            'logic_placed': {'face': '#64B5F6', 'edge': '#1976D2'}, 
+            'logic_placed': {'face': '#64B5F6', 'edge': '#1976D2'},
             'io_empty': {'face': '#FFF176', 'edge': '#FFB300'},
             'io_placed': {'face': '#81C784', 'edge': '#388E3C'},
-            'text': "#282727"                                      
+            'text': "#282727"
         }
 
         self.wire_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
-        
+
         self.fig = plt.figure(figsize=(8, 6))
         self.ax = self.fig.add_subplot(111)
-        
+
         self.figs = None
         self.axes = None
-    
+
+        # Initialize placement history for tracking optimization progress
+        self.placement_history = []
+
         if debug_mode:
             self._init_debug_interface()
-        
+
         plt.rcParams['font.family'] = 'Calibri'
         plt.rcParams['font.size'] = 12
         plt.rcParams['axes.linewidth'] = 0.8
@@ -289,18 +292,18 @@ class PlacementDrawer:
 
     def draw_multi_step_placement(self, save_path=None):
         step_labels = ['250', '500', '750', '1000']
-        placement_history = get_placment_history()
+        placement_history = self.placement_history
         # Create figure with subplots
         num_plots = len(step_labels)
         self.figs = plt.figure(figsize=(5 * num_plots, 5))
         self.axes = []
-        
+
         for plot_idx, step_label in enumerate(step_labels):
             ax = self.figs.add_subplot(1, num_plots, plot_idx + 1)
             self.axes.append(ax)
-            site_coords = placement_history[plot_idx][0]
+            site_coords = placement_history[plot_idx]['site_coords']
             # Setup plot
-            
+
             real_logic_coords = self.logic_grid.to_real_coords_tensor(site_coords)
             self.setup_plot(ax)
             self._draw_all_base_grids(ax, include_io=False)
@@ -311,7 +314,8 @@ class PlacementDrawer:
         self.figs.canvas.draw()
         plt.show(block=False)
         plt.pause(5)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
         
     def plot_fpga_placement_loss(self, save_path=None):
         loss_data = get_loss_history()
