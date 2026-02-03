@@ -111,6 +111,10 @@ class FpgaPlacer:
                 self.fixed_insts.append(site)
 
     def get_clock_insts(self, design):
+        """Identify clock instances and report unclassified site types."""
+        from .logger import INFO
+
+        unclassified_types = set()
 
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
@@ -120,7 +124,11 @@ class FpgaPlacer:
                 continue
 
             elif site not in self.optimizable_insts and site not in self.fixed_insts:
-                print(f'Warning: cannot orient site type, site: {site.getName()}, type: {site.getSiteTypeEnum()}')
+                # Collect unclassified types for summary (e.g., BITSLICE_COMPONENT_RX_TX)
+                unclassified_types.add(str(site_type))
+
+        if unclassified_types:
+            INFO(f"Found {len(unclassified_types)} unclassified site types (ignored): {', '.join(sorted(unclassified_types))}")
 
     def get_available_target_sites(self, device):
 
