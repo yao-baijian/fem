@@ -8,7 +8,7 @@ class PlaceType(Enum):
     CENTERED = 1
     IO = 2
     OTHER = 3
-    
+
 class GridType(Enum):
     SQUARE = 1
     RECTAN = 2
@@ -17,7 +17,7 @@ class GridType(Enum):
 SLICE_SITE_ENUM = [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
 
 IO_SITE_ENUM = [
-    SiteTypeEnum.HPIOB, 
+    SiteTypeEnum.HPIOB,
     SiteTypeEnum.HRIO
 ]
 

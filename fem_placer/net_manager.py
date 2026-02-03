@@ -7,7 +7,7 @@ This implementation matches the master branch approach using bounding box HPWL.
 
 import torch
 from typing import Dict, List, Optional, Tuple, Any
-from .logger import INFO, WARNING, ERROR
+# Logger functions not currently used but kept for potential debugging
 
 
 class NetManager:

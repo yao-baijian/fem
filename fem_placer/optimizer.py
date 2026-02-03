@@ -27,7 +27,7 @@ class FPGAPlacementOptimizer:
     site coordinate matrices for HPWL calculation.
 
     Example:
-        >>> optimizer = FPGAPlacementOptimizerQUBO(
+        >>> optimizer = FPGAPlacementOptimizer(
         ...     num_inst, num_site, J, site_coords_matrix,
         ...     drawer=global_drawer,
         ...     visualization_steps=[0, 250, 500, 750, 999]

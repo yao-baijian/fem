@@ -50,13 +50,13 @@ class FpgaPlacer:
         self.net_to_sites = {}
         self.net_to_slice_sites_tensor = None
 
-        self.optimizable_site_inst_to_id = {} 
-        self.available_site_to_id = {}    
+        self.optimizable_site_inst_to_id = {}
+        self.available_site_to_id = {}
         self.optimizable_id_to_site_inst = {}
-        self.available_id_to_site = {}   
+        self.available_id_to_site = {}
 
-        self.fixed_site_to_id = {}    
-        self.fixed_id_to_site = {}  
+        self.fixed_site_to_id = {}
+        self.fixed_id_to_site = {}
 
         self.nets = None
 
@@ -79,7 +79,7 @@ class FpgaPlacer:
             return self.fixed_site_to_id.get(site_name) + self.num_optimizable_insts
         else:
             return None
-        
+
     def get_site_inst_name_by_id(self, id):
         if id in self.optimizable_id_to_site_inst:
             return self.optimizable_id_to_site_inst.get(id)
@@ -90,31 +90,31 @@ class FpgaPlacer:
 
     def get_site_id_by_name(self, site_name):
         return self.available_site_to_id.get(site_name)
-    
+
     def get_site_name_by_id(self, id):
         return self.available_id_to_site.get(id)
 
     def get_optimizable_insts(self, design):
-        
+
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
 
             if site_type in self.slice_site_enum:
                 self.optimizable_insts.append(site)
-    
+
     def get_fixed_insts(self, design):
-        
+
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
-            
+
             if site_type in self.io_site_enum:
                 self.fixed_insts.append(site)
 
     def get_clock_insts(self, design):
-        
+
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
-            
+
             if site_type in self.clock_site_enum:
                 # self.fixed_insts.append(site)
                 continue
@@ -123,39 +123,39 @@ class FpgaPlacer:
                 print(f'Warning: cannot orient site type, site: {site.getName()}, type: {site.getSiteTypeEnum()}')
 
     def get_available_target_sites(self, device):
-        
+
         for site in device.getAllSites():
             site_x = site.getInstanceX()
             site_y = site.getInstanceY()
 
             # print(f'site: {site.getName()}, type: {site.getSiteTypeEnum()}, x: {site_x}, y: {site_y}')
-            
-            if (self.bbox['start_x'] <= site_x <= self.bbox['end_x'] and 
+
+            if (self.bbox['start_x'] <= site_x <= self.bbox['end_x'] and
                 self.bbox['start_y'] <= site_y <= self.bbox['end_y'] ):
-                
+
                 site_type = site.getSiteTypeEnum()
 
                 if site_type in self.slice_site_enum:
                     self.available_sites.append(site)
-        
+
         if len(self.available_sites) < len(self.optimizable_insts):
             print(f"Warning: available sites({len(self.available_sites)}) less than optimizable sites({len(self.optimizable_insts)})")
             # TODO add sites here
 
     def map_site_to_id(self):
 
-        for idx, site_inst in enumerate(self.optimizable_insts): 
+        for idx, site_inst in enumerate(self.optimizable_insts):
             site_name = site_inst.getName()
             self.optimizable_site_inst_to_id[site_name] = idx
             self.optimizable_id_to_site_inst[idx] = site_name
-        
+
         self.num_optimizable_insts = len(self.optimizable_insts)
 
-        for idx, site_inst in enumerate(self.fixed_insts): 
+        for idx, site_inst in enumerate(self.fixed_insts):
             site_name = site_inst.getName()
             self.fixed_site_to_id[site_name] = idx
             self.fixed_id_to_site[idx] = site_name
-        
+
         for idx, site in enumerate(self.available_sites):
             site_name = site.getName()
             self.available_site_to_id[site_name] = idx
@@ -194,17 +194,17 @@ class FpgaPlacer:
 
     def _init_io_area(self):
         num_pins = len(self.fixed_insts)
-        
+
         io_width = 1
         io_height = num_pins
-        
+
         io_start_x = self.bbox['start_x'] - io_width - 2
         io_end_x = io_start_x + io_width
-        
+
         bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
         io_start_y = bbox_center_y - io_height // 2
         io_end_y = io_start_y + io_height
-        
+
         self.io_area = {
             'type': 'left_io',
             'start_x': io_start_x,
@@ -216,22 +216,22 @@ class FpgaPlacer:
             'center_y': (io_start_y + io_end_y) // 2,
             'num_pins': num_pins
         }
-        
+
         print(f"INFO: Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_end_x}, {io_end_y})")
 
     def _init_clock_buffer_area(self):
         num_clk_buf = len(self.clock_insts)
-        
+
         clock_width = 1
         clock_height = num_clk_buf
-        
+
         clock_start_x = self.bbox['start_x'] - 1
         clock_end_x = clock_start_x + clock_width
-        
+
         bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
         clock_start_y = bbox_center_y - clock_height // 2
         clock_end_y = clock_start_y + clock_height
-        
+
         self.clock_area = {
             'type': 'clock_buffers',
             'start_x': clock_start_x,
@@ -243,16 +243,16 @@ class FpgaPlacer:
             'center_y': (clock_start_y + clock_end_y) // 2,
             'num_pins': num_clk_buf,
         }
-        
+
         print(f"INFO: Clock buffer area - position: ({clock_start_x}, {clock_start_y}) to ({clock_end_x}, {clock_end_y})")
 
     def random_initial_placement(self, design):
-    
+
         design.unplaceDesign()
 
         self.num_of_instance = len(self.optimizable_insts)
         self.num_of_sites = len(self.available_sites)
-        
+
         print(f"INFO: number of optimizable instance: {self.num_of_instance}, number of available sites: {self.num_of_sites}")
 
         random.shuffle(self.available_sites)
@@ -261,10 +261,10 @@ class FpgaPlacer:
         for i, site in enumerate(self.optimizable_insts):
             if i < len(self.available_sites):
                 target_site = self.available_sites[i]
-                
+
                 if self.is_site_compatible(site, target_site):
                     # self.place_site(site, target_site)
-                    
+
                     self.unfixed_placements[site.getName()] = {
                         'target_site': target_site,
                         'source_site': site,
@@ -307,39 +307,39 @@ class FpgaPlacer:
     def is_site_compatible(self, source_site, target_site):
         source_type = source_site.getSiteTypeEnum()
         target_type = target_site.getSiteTypeEnum()
-        
+
         if source_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]:
             return target_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
-        
+
         if source_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M]:
             return target_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M]
-        
+
         if source_type in [SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]:
             return target_type in [SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]
-        
+
         return source_type == target_type
 
     # TODO need decide whether this is needed
     def suggest_bel_for_site(self, source_site, target_site):
         site_type = target_site.getSiteTypeEnum()
-        
+
         if site_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]:
             available_bels = ['A6LUT', 'B6LUT', 'C6LUT', 'D6LUT']
             return available_bels[hash(source_site.getName()) % len(available_bels)]
-        
-        elif site_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M, 
+
+        elif site_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M,
                         SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]:
             return 'IOB'
-        
+
         return 'UNKNOWN'
-  
+
     def record_site_connectivity(self):
         sites_net_num = 0
         sites_net_list = []
         for net in self.nets:
             if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
                 continue
-                
+
             net_name = net.getName()
             logic_sites_in_net = set()  # 逻辑站点 (SLICE, DSP, BRAM等)
             io_sites_in_net = set()     # IO 站点 (IOB, HPIOB等)
@@ -375,7 +375,7 @@ class FpgaPlacer:
                         if inst2 not in self.io_to_site_connectivity[io_inst1]:
                             self.io_to_site_connectivity[io_inst1][inst2] = 0
                         self.io_to_site_connectivity[io_inst1][inst2] += 1
-                        
+
                         if inst2 not in self.io_to_site_connectivity:
                             self.io_to_site_connectivity[inst2] = {}
                         if io_inst1 not in self.io_to_site_connectivity[inst2]:
@@ -391,7 +391,7 @@ class FpgaPlacer:
                         if inst2 not in self.site_to_site_connectivity[inst1]:
                             self.site_to_site_connectivity[inst1][inst2] = 0
                         self.site_to_site_connectivity[inst1][inst2] += 1
-                        
+
                         if inst2 not in self.site_to_site_connectivity:
                             self.site_to_site_connectivity[inst2] = {}
                         if inst1 not in self.site_to_site_connectivity[inst2]:
@@ -437,7 +437,7 @@ class FpgaPlacer:
         self.estimate_hpwl(design)
 
         print(f"INFO: nets number: {len(self.nets)}, total hpwl: {self.total_hpwl:.2f}, without io: {self.total_hpwl_no_io:.2f}")
-        
+
         self.get_optimizable_insts(design)      # SLICEL
         self.get_fixed_insts(design)            # HPIOB, BITSLICE_COMPONENT_RX_TX
         self.get_clock_insts(design)            # BUFGCE
@@ -548,9 +548,9 @@ class FpgaPlacer:
         self.total_hpwl_no_io = 0.0
         self.net_hpwl_no_io.clear()
         self.net_bbox_no_io.clear()
-        
+
         self.nets = design.getNets()
-        
+
         for net in self.nets:
             net_name = net.getName()
             hpwl, bbox = self._calculate_net_hpwl_rapidwright(net, True)
@@ -564,7 +564,7 @@ class FpgaPlacer:
             self.net_hpwl_no_io[net_name] = hpwl
             self.net_bbox_no_io[net_name] = bbox
             self.total_hpwl_no_io += hpwl
-        
+
         return self.total_hpwl, self.total_hpwl_no_io
 
     def _calculate_net_hpwl_rapidwright(self, net, include_io=True):
@@ -599,14 +599,14 @@ class FpgaPlacer:
             return 0.0, {}
 
         return self._calculate_hpwl_from_coordinates(list(coordinates_set))
-    
+
     def _calculate_hpwl_from_coordinates(self, coordinates):
         x_coords = [coord[0] for coord in coordinates]
         y_coords = [coord[1] for coord in coordinates]
-        
+
         min_x, max_x = min(x_coords), max(x_coords)
         min_y, max_y = min(y_coords), max(y_coords)
-        
+
         hpwl = (max_x - min_x) + (max_y - min_y)
         bbox = {
             'min_x': min_x, 'max_x': max_x,
@@ -615,7 +615,7 @@ class FpgaPlacer:
             'height': max_y - min_y,
             'num_pins': len(coordinates)
         }
-        
+
         return hpwl, bbox
 
     def estimate_solver_hpwl(self, coords, io_coords, include_io=True):
@@ -673,7 +673,7 @@ class FpgaPlacer:
             self.total_hpwl_no_io += hpwl
 
         return {'hpwl': self.total_hpwl, 'hpwl_no_io': self.total_hpwl_no_io}
-    
+
     def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords, include_io=True):
         coordinates = []
         # print(f'INFO: connected sites: {connected_sites}')
@@ -691,5 +691,5 @@ class FpgaPlacer:
             return 0.0, {}
 
         return self._calculate_hpwl_from_coordinates(coordinates)
-    
+
     # def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords):
