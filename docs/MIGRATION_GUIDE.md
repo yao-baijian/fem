@@ -436,10 +436,12 @@ router = Router(placer=fpga_placer)
 routes = router.route_connections(J, placement_legalized[0])
 
 # Visualize
-drawer.draw_complete_placement(
-    coords=placement_legalized[0],
+drawer.draw_place_and_route(
+    logic_coords=placement_legalized[0],
     routes=routes,
-    step=num_steps,
+    io_coords=None,
+    include_io=False,
+    iteration=num_steps,
     title_suffix='Final'
 )
 drawer.draw_multi_step_placement()
@@ -448,9 +450,9 @@ drawer.draw_multi_step_placement()
 ### Migration Notes
 - Same basic interface for `Router` and `PlacementDrawer`
 - Use `J` matrix instead of `net_manager.insts_matrix`
-- `draw_place_and_route()` renamed to `draw_complete_placement()`
+- `draw_place_and_route()` method signature unchanged
 - `plot_fpga_placement_loss()` removed (tracking done in optimizer)
-- `scale` and `include_io` parameters removed from draw methods
+- Drawing methods require explicit `io_coords` and `include_io` parameters
 
 ---
 
@@ -643,7 +645,14 @@ placement_legalized, overlap, hpwl_before, hpwl_after = legalizer.legalize_place
 # 6. Route & Draw
 router = Router(placer=fpga_placer)
 routes = router.route_connections(J, placement_legalized[0])
-drawer.draw_complete_placement(placement_legalized[0], routes, 200, 'Final')
+drawer.draw_place_and_route(
+    logic_coords=placement_legalized[0],
+    routes=routes,
+    io_coords=None,
+    include_io=False,
+    iteration=200,
+    title_suffix='Final'
+)
 ```
 
 ---
@@ -661,7 +670,7 @@ drawer.draw_complete_placement(placement_legalized[0], routes, 200, 'Final')
 | `fpga_placer.with_io()` | `include_io` parameter |
 | `fpga_placer.get_ids()` | `torch.arange(len(fpga_placer.optimizable_insts))` |
 | `grid.to_real_coords_tensor(config)` | `grid.to_real_coords_tensor(config)` (same) |
-| `drawer.draw_place_and_route(...)` | `drawer.draw_complete_placement(...)` |
+| `drawer.draw_place_and_route(...)` | `drawer.draw_place_and_route(...)` (same) |
 | `PlaceType.CENTERED` / `PlaceType.IO` | Removed (use `include_io` flag) |
 | `GridType.SQUARE` / `GridType.RECTAN` | Removed |
 | N/A | `SBSolver`, `SBPlacementSolver` |
