@@ -111,10 +111,12 @@ router = Router(placer=fpga_wrapper)
 routes = router.route_connections(J, placement_legalized[0])
 
 # Visualize final result
-global_drawer.draw_complete_placement(
-    placement_legalized[0],
-    routes,
-    num_steps,
+global_drawer.draw_place_and_route(
+    logic_coords=placement_legalized[0],
+    routes=routes,
+    io_coords=None,
+    include_io=False,
+    iteration=num_steps,
     title_suffix="Final Placement"
 )
 
