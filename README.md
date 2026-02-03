@@ -1,216 +1,299 @@
-# FPGA Placement using FEM Framework
+# FPGA Placement using Free Energy Minimization
 
-A clean, modular FPGA placement tool built on top of the [FEM (Field Effect Method)](https://github.com/Fanerst/FEM) optimization framework.
+A modular FPGA placement toolkit using Free Energy Minimization (FEM) with QUBO formulation for optimization.
 
 ## 🎯 Key Features
 
-- **Clean Architecture**: FEM framework as external dependency (git submodule)
-- **Extensible Design**: Uses FEM's `customize` interface - no core modifications
-- **Standard Python Package**: Modern `pyproject.toml` configuration
-- **FPGA-Specific**: Optimized objectives (HPWL, timing) and constraints
+- **Clean Architecture**: Self-contained `fem_placer` package with no external dependencies
+- **QUBO Formulation**: Uses site coordinate matrices for placement optimization
 - **Complete Pipeline**: Placement → Legalization → Routing → Visualization
+- **Multiple Solvers**: FEM-based optimizer + Simulated Bifurcation baseline
+- **ML Support**: Parameter prediction using Random Forest (optional)
+- **Timing-Aware**: Congestion and timing analysis tools
+- **Well-Tested**: 50+ unit tests with comprehensive coverage
 
 ## 📦 Project Structure
 
 ```
-FPGA-Placement-FEM/
-├── external/
-│   └── FEM/  (git submodule)     # Original FEM framework
-├── fem_placer/             # Our FPGA placement package
-│   ├── __init__.py
-│   ├── placer.py                 # RapidWright interface
-│   ├── objectives.py             # HPWL and constraint functions
-│   ├── drawer.py                 # Visualization tools
-│   ├── legalizer.py              # Placement legalization
-│   ├── router.py                 # Connection routing
-│   └── utils.py                  # Utility functions
-├── tests/
-│   └── test_fpga_placement.py
-├── tcl/                          # Vivado TCL scripts
-├── pyproject.toml                # Modern Python package config
-├── requirements.txt              # Dependencies
+fem/
+├── fem_placer/                  # Main placement package
+│   ├── placer.py                # RapidWright interface & design loading
+│   ├── optimizer.py             # FEM-based placement optimizer
+│   ├── objectives.py            # HPWL and constraint functions (QUBO)
+│   ├── legalizer.py             # Placement legalization
+│   ├── router.py                # Connection routing
+│   ├── drawer.py                # Visualization tools
+│   ├── timer.py                 # Timing-aware placement
+│   ├── solver_sb.py             # Simulated Bifurcation solver
+│   ├── hyper_bmincut.py         # Hypergraph balanced min-cut
+│   ├── grid.py                  # Grid management
+│   ├── net_manager.py           # Network connectivity
+│   └── utils.py                 # Design parsing utilities
+├── ml_alpha/                    # ML parameter prediction (optional)
+│   ├── model.py                 # Random Forest model
+│   ├── dataset.py               # Feature extraction
+│   ├── train.py                 # Training utilities
+│   └── predict.py               # Prediction interface
+├── tests/                       # Test suite (50+ tests)
+│   ├── test_objectives.py       # Objective function tests
+│   ├── test_timer.py            # Timing analysis tests
+│   ├── test_sb_solver.py        # SB solver tests
+│   ├── test_ml_alpha.py         # ML module tests
+│   └── test_fpga_placement.py   # Integration test
+├── benchmarks/                  # Benchmark problems
+│   ├── bmincut/                 # Balanced min-cut
+│   ├── maxcut/                  # Max-cut (Gset)
+│   └── maxsat/                  # Max-SAT
+├── tcl/                         # Vivado synthesis scripts
+├── scripts/                     # Test and utility scripts
+├── pyproject.toml               # Modern Python package config
 └── README.md
 ```
 
 ## 🚀 Installation
 
-### 1. Clone with Submodules
+### Prerequisites
+
+- Python 3.9+
+- PyTorch
+- RapidWright (for FPGA design handling)
+
+### Installation Steps
+
+**Using uv (recommended - fast and modern)**
 
 ```bash
-git clone --recursive https://github.com/yourusername/fpga-placement.git
-cd fpga-placement
-```
+# Clone the repository
+git clone https://github.com/yao-baijian/fem.git
+cd fem
 
-If you forgot `--recursive`:
-
-```bash
-git submodule update --init --recursive
-```
-
-### 2. Install Dependencies
-
-**Option A: Using uv (recommended - fast and modern)**
-```bash
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Create virtual environment and install dependencies
 uv sync
 
-# Activate the virtual environment
+# Install PyTorch
+uv pip install torch
+
+# Install RapidWright
+uv pip install rapidwright
+
+# Optional: Install ML dependencies
+uv pip install scikit-learn joblib
+```
+
+**Using pip (traditional)**
+
+```bash
+git clone https://github.com/yao-baijian/fem.git
+cd fem
+
+# Create virtual environment
+python -m venv .venv
 source .venv/bin/activate  # On macOS/Linux
-# or
-.venv\Scripts\activate  # On Windows
+# or .venv\Scripts\activate  # On Windows
 
-# Install optional dependencies
-uv pip install rapidwright  # For FPGA design handling
-```
-
-**Option B: Using pip (traditional)**
-```bash
-pip install -r requirements.txt
-pip install rapidwright  # For FPGA design handling
-```
-
-**Option C: Development mode with pip**
-```bash
+# Install package
 pip install -e .
-pip install -e ".[dev,rapidwright]"
+
+# Install PyTorch
+pip install torch
+
+# Install RapidWright
+pip install rapidwright
+
+# Optional: ML dependencies
+pip install -e ".[ml]"
 ```
-
-### 3. Add FEM to Python Path
-
-The package automatically handles FEM imports from `external/FEM`.
 
 ## 📖 Usage
 
-### Basic Example
+### Basic FPGA Placement Example
 
 ```python
 import torch
-import sys
-sys.path.insert(0, 'external')  # Add FEM to path
-
-from FEM import FEM
 from fem_placer import (
     FpgaPlacer,
-    PlacementDrawer,
+    FPGAPlacementOptimizer,
     Legalizer,
     Router,
-    expected_fpga_placement_xy,
-    infer_placements_xy
+    PlacementDrawer
 )
 from fem_placer.utils import parse_fpga_design
 
-# Initialize FPGA placer
-fpga_wrapper = FpgaPlacer()
-fpga_wrapper.init_placement('./design.dcp', 'output.dcp')
+# 1. Initialize FPGA placer and load design
+fpga_placer = FpgaPlacer(utilization_factor=0.4)
+fpga_placer.init_placement('design.dcp', 'output.dcp')
 
-# Parse design
-num_inst, num_site, J, J_extend = parse_fpga_design(fpga_wrapper)
+# 2. Parse design to get coupling matrix
+num_inst, num_site, J, J_extend = parse_fpga_design(fpga_placer)
 
-# Define customize functions for FEM
-def customize_expected_func(coupling_matrix, p_list):
-    p_x, p_y = p_list
-    return expected_fpga_placement_xy(coupling_matrix, p_x, p_y)
-
-def customize_infer_func(coupling_matrix, p_list):
-    p_x, p_y = p_list
-    return infer_placements_xy(coupling_matrix, p_x, p_y)
-
-# Create FEM problem using customize interface
-case_placements = FEM.from_couplings(
-    'customize',  # Use FEM's customize type
-    num_inst,
-    num_inst * (num_inst - 1) // 2,
-    J,
-    customize_expected_func=customize_expected_func,
-    customize_infer_func=customize_infer_func
+# 3. Create site coordinates matrix for all grid positions
+area_length = fpga_placer.bbox['area_length']
+site_coords = torch.cartesian_prod(
+    torch.arange(area_length, dtype=torch.float32),
+    torch.arange(area_length, dtype=torch.float32)
 )
 
-# Solve
-case_placements.set_up_solver(num_trials=10, num_steps=1000, dev='cpu')
-config, result = case_placements.solve()
+# 4. Create optimizer with QUBO formulation
+optimizer = FPGAPlacementOptimizer(
+    num_inst=num_inst,
+    num_site=site_coords.shape[0],
+    coupling_matrix=J,
+    site_coords_matrix=site_coords,
+    constraint_weight=1.0
+)
 
-# Legalize and route
-legalizer = Legalizer(fpga_wrapper.bbox)
-placement = legalizer.legalize_placement(config[0])
+# 5. Run optimization
+config, result = optimizer.optimize(
+    num_trials=10,
+    num_steps=1000,
+    dev='cpu',
+    area_width=area_length,
+    betamin=0.01,
+    betamax=0.5,
+    anneal='inverse',
+    optimizer='adam',
+    learning_rate=0.1
+)
+
+# 6. Get best solution and convert to real coordinates
+best_idx = torch.argmin(result)
+grid_coords = config[best_idx]
+logic_grid = fpga_placer.get_grid('logic')
+real_coords = logic_grid.to_real_coords_tensor(grid_coords)
+
+# 7. Legalize placement
+legalizer = Legalizer(placer=fpga_placer, device='cpu')
+logic_ids = torch.arange(num_inst)
+placement_legalized, overlap, hpwl_before, hpwl_after = legalizer.legalize_placement(
+    real_coords, logic_ids
+)
+
+# 8. Route and visualize
+router = Router(placer=fpga_placer)
+routes = router.route_connections(J, placement_legalized[0])
+
+drawer = PlacementDrawer(placer=fpga_placer, num_subplots=5)
+drawer.draw_place_and_route(
+    logic_coords=placement_legalized[0],
+    routes=routes,
+    io_coords=None,
+    include_io=False,
+    iteration=1000,
+    title_suffix='Final'
+)
+
+print(f"HPWL after legalization: {hpwl_after['hpwl_no_io']:.2f}")
+print(f"Overlaps: {overlap}")
 ```
 
-### Run Tests
+### Using Simulated Bifurcation Solver
 
-```bash
-python tests/test_fpga_placement_refactored.py
+```python
+from fem_placer import SBSolver
+
+# Create SB solver
+solver = SBSolver(mode='discrete', heated=True, device='cpu')
+
+# Solve Ising problem
+spins, energy = solver.solve_ising(J, agents=10, max_steps=5000)
+
+# Solve QUBO problem
+bits, energy = solver.solve_qubo(Q, agents=10, max_steps=5000)
 ```
 
-## 🔄 Updating FEM
+### ML Parameter Prediction (Optional)
 
-To update FEM to the latest version:
+```python
+from ml_alpha import train_from_csv, predict_alpha, create_default_model
+
+# Train model
+model = train_from_csv('training_data.csv')
+
+# Predict optimal alpha parameter
+features = {
+    'num_inst': 100,
+    'num_site': 200,
+    'num_trial': 10,
+    'betamin': 0.01,
+    # ... other features
+}
+alpha = predict_alpha(model, features)
+```
+
+## 🧪 Testing
+
+Run the full test suite:
 
 ```bash
-cd external/FEM
-git pull origin main
-cd ../..
-git add external/FEM
-git commit -m "Update FEM to latest version"
+# Run all tests (50+ tests)
+uv run pytest tests/ -v
 ```
 
 ## 📐 Architecture
 
-### Why This Design?
+### Algorithm: QUBO-Based FEM
 
-1. **FEM as Submodule**: Keeps FEM code separate, easy to update from upstream
-2. **Customize Interface**: Uses FEM's built-in extensibility - no modifications needed
-3. **Standard Package**: Follows Python packaging best practices
-4. **Modular**: Each component (placer, legalizer, router) is independent
+The optimizer uses a QUBO (Quadratic Unconstrained Binary Optimization) formulation:
+
+1. **Variables**: Probability distribution `p[i, s]` for instance `i` at site `s`
+2. **Objective**: Minimize expected HPWL + constraint violations
+3. **Optimization**: Free energy minimization with temperature annealing
+4. **Inference**: Argmax over probabilities to get hard assignments
 
 ### Key Components
 
-- **FpgaPlacer**: Interfaces with RapidWright for FPGA design handling
-- **Objectives**: HPWL calculation, constraint functions
-- **Legalizer**: Resolves overlaps, snaps to valid sites
-- **Router**: Computes wire paths for visualization
-- **Drawer**: Matplotlib-based visualization
+- **FpgaPlacer**: RapidWright interface for loading/saving FPGA designs
+- **FPGAPlacementOptimizer**: FEM-based placement using QUBO formulation
+- **Grid & NetManager**: Design structure management (from master branch)
+- **Legalizer**: Resolves overlaps using greedy and global optimization
+- **Router**: Manhattan routing for visualization
+- **Timer**: Timing-aware and congestion-aware placement
+- **SBSolver**: Simulated Bifurcation baseline solver
 
-## 🆚 Comparison with Direct Copy
+## 🔧 Advanced Features
 
-| Aspect | Old (Direct Copy) | New (Submodule) |
-|--------|------------------|-----------------|
-| FEM Updates | Manual merge | `git submodule update` |
-| Code Ownership | Unclear | Crystal clear |
-| Modifications | Mixed with FEM | Separate package |
-| Maintenance | Difficult | Easy |
-| Distribution | Bloated | Clean |
+### Timing-Aware Placement
 
-## 📝 Development
+```python
+from fem_placer import Timer
 
-### Project Goals
+timer = Timer()
+timing_hpwl = timer.calculate_timing_based_hpwl(
+    J, p, area_width, timing_criticality
+)
+```
 
-This project demonstrates how to:
-- Build domain-specific tools on top of general frameworks
-- Use git submodules for dependency management
-- Follow Python packaging best practices
-- Maintain clean code boundaries
+### Hypergraph Balanced Min-Cut
 
-### Contributing
+```python
+from fem_placer import expected_hyperbmincut, balance_constrain
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+hyperedges = [[0, 1, 2], [1, 3, 4], [2, 4, 5]]
+cut = expected_hyperbmincut(J, p, hyperedges)
+balance_loss = balance_constrain(J, p, U_max=0.6, L_min=0.4)
+```
+
+### Code Quality
+
+The codebase follows Python best practices:
+- Type hints where applicable
+- Comprehensive docstrings
+- Clean imports (no unused dependencies)
+- No trailing whitespace
+- Proper error handling
 
 ## 📚 References
 
-- [FEM Framework](https://github.com/Fanerst/FEM)
-- [RapidWright](https://www.rapidwright.io/)
-- [Python Packaging Guide](https://packaging.python.org/)
+- [Original FEM framework](https://github.com/Fanerst/FEM)
+- [RapidWright](https://www.rapidwright.io/) - FPGA CAD framework
+- [PyTorch](https://pytorch.org/) - Deep learning framework
+- [Simulated Bifurcation Library](https://pypi.org/project/simulated-bifurcation/)
+
 
 ## 📄 License
 
 MIT License - see LICENSE file for details
 
-## 🙏 Acknowledgments
-
-- FEM framework by [Fanerst](https://github.com/Fanerst/FEM)
-- RapidWright by Xilinx Research Labs
