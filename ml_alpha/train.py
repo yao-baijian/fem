@@ -2,13 +2,12 @@ import os
 import pandas as pd
 import sys
 sys.path.append('.')
-from FEM import FEM
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from FEM.ml_alpha.model import create_default_model, save_model, MODEL_PATH
-from FEM.ml_alpha.dataset import CSV_PATH, FIELDNAMES
+from ml_alpha.model import create_default_model, save_model, MODEL_PATH
+from ml_alpha.dataset import CSV_PATH, FIELDNAMES
 
-PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "hpwl_after", "overlap_after")]
+PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "hpwl_after", "overlap_after", "instance")]
 
 def train_from_csv(csv_path: str = None, target: str = "alpha", test_size: float = 0.2):
     p = csv_path or CSV_PATH

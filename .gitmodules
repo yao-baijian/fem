@@ -1,3 +1,0 @@
-[submodule "external/FEM"]
-	path = external/FEM
-	url = https://github.com/Fanerst/FEM.git

@@ -14,4 +14,6 @@ def load_model(path: str = MODEL_PATH):
     return joblib.load(path)
 
 def create_default_model(**kwargs):
-    return RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42, **kwargs)
+    defaults = {'n_estimators': 200, 'max_depth': 8, 'random_state': 42}
+    defaults.update(kwargs)
+    return RandomForestRegressor(**defaults)

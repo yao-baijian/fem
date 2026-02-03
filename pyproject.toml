@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
 torch = ["torch", "torchvision", "torchaudio"]
+ml = ["scikit-learn>=1.3.0", "joblib>=1.3.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
