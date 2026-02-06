@@ -3,6 +3,8 @@ Test script for xw/refactor branch FPGA placement using Simulated Bifurcation.
 
 This script solves the same placement problem as test_refactor_branch_qubo.py
 but uses the simulated-bifurcation library instead of the FEM optimizer.
+
+Uses strong constraint weights to enforce feasibility on the combinatorial solver.
 """
 
 import sys
@@ -67,9 +69,9 @@ qubo_memory_mb = N * N * 4 / 1024 / 1024
 print(f"\nMemory usage:")
 print(f"  QUBO matrix ({N} x {N}): ~{qubo_memory_mb:.2f} MB")
 
-# Constraint weights matching the QUBO script
-lam = num_inst / 2.0
-mu = num_inst / 2.0
+# Strong constraint weights to enforce feasibility on combinatorial solver
+lam = 100.0 * num_inst
+mu = 100.0 * num_inst
 print(f"\nINFO: Constraint weights: lam={lam}, mu={mu}")
 print(f"INFO: SB agents: {agents}, max_steps: {max_steps}")
 
@@ -79,6 +81,12 @@ site_indices, grid_coords, energy, meta = solve_placement_sb(
     J, logic_site_coords, lam=lam, mu=mu,
     agents=agents, max_steps=max_steps, best_only=True
 )
+
+# Check feasibility
+n_unique = len(torch.unique(site_indices))
+print(f"\nINFO: Unique sites used: {n_unique} / {num_inst} instances")
+if n_unique < num_inst:
+    print(f"WARNING: Only {n_unique} distinct sites — {num_inst - n_unique} instances overlap")
 
 print(f"\nINFO: SB energy: {energy}")
 print(f"INFO: Grid coordinates shape: {grid_coords.shape}")
