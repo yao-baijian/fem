@@ -1,0 +1,243 @@
+/* Custom CSS for FPGA Placement FEM Documentation */
+
+/* Grid cards styling */
+.grid.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.grid.cards > * {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.grid.cards > *:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Code block enhancements */
+.highlight {
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+/* Table styling */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+table th {
+  background-color: var(--md-primary-fg-color);
+  color: white;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+table tr:hover {
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+/* Admonition customization */
+.admonition {
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+/* Button-like links */
+.md-button {
+  border-radius: 0.25rem;
+  padding: 0.5rem 1rem;
+  display: inline-block;
+  transition: transform 0.2s;
+}
+
+.md-button:hover {
+  transform: translateY(-1px);
+}
+
+/* Math rendering */
+.arithmatex {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Responsive images */
+img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
+/* Code annotations */
+.code-annotation {
+  font-size: 0.85em;
+  color: var(--md-primary-fg-color);
+}
+
+/* Footer customization */
+.md-footer-meta {
+  background-color: var(--md-default-bg-color);
+}
+
+/* Navigation improvements */
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* Search highlighting */
+mark {
+  background-color: var(--md-accent-fg-color);
+  color: white;
+  padding: 0 0.2rem;
+  border-radius: 0.2rem;
+}
+
+/* Mermaid diagram styling */
+.mermaid {
+  background-color: transparent;
+  margin: 2rem 0;
+}
+
+/* Tabbed content */
+.tabbed-set {
+  margin: 1rem 0;
+}
+
+/* Custom hero section */
+.hero {
+  text-align: center;
+  padding: 3rem 1rem;
+  background: linear-gradient(135deg, var(--md-primary-fg-color) 0%, var(--md-accent-fg-color) 100%);
+  color: white;
+  border-radius: 1rem;
+  margin: 2rem 0;
+}
+
+.hero h1 {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.hero p {
+  font-size: 1.2rem;
+  opacity: 0.9;
+}
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 2rem;
+  margin: 3rem 0;
+}
+
+.feature-item {
+  text-align: center;
+  padding: 2rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  transition: all 0.3s;
+}
+
+.feature-item:hover {
+  border-color: var(--md-primary-fg-color);
+  transform: translateY(-5px);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+}
+
+.feature-item h3 {
+  color: var(--md-primary-fg-color);
+  margin-top: 1rem;
+}
+
+/* Comparison table enhancements */
+.comparison-table {
+  margin: 2rem 0;
+}
+
+.comparison-table td:first-child {
+  font-weight: 600;
+}
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge-success {
+  background-color: #4caf50;
+  color: white;
+}
+
+.badge-warning {
+  background-color: #ff9800;
+  color: white;
+}
+
+.badge-error {
+  background-color: #f44336;
+  color: white;
+}
+
+/* Responsive adjustments */
+@media screen and (max-width: 768px) {
+  .hero h1 {
+    font-size: 2rem;
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .grid.cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Dark mode adjustments */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #1e1e1e;
+  --md-default-fg-color: #e0e0e0;
+}
+
+[data-md-color-scheme="slate"] table th {
+  background-color: var(--md-primary-fg-color--dark);
+}
+
+[data-md-color-scheme="slate"] .feature-item {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-md-color-scheme="slate"] .feature-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Print styles */
+@media print {
+  .md-header,
+  .md-sidebar,
+  .md-footer {
+    display: none;
+  }
+
+  .md-content {
+    max-width: 100%;
+  }
+}

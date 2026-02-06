@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "FPGA-Placement-FEM"
+version = "0.1.0"
+description = "FPGA placement toolkit based on Free Energy Minimization (FEM) framework"
+readme = "README.md"
+requires-python = ">=3.9"
+
+authors = [
+  { name = "author name" }
+]
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "rapidwright>=2025.2.0",
+  "pandas>=2.3.3"
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+torch = ["torch", "torchvision", "torchaudio"]
+ml = ["scikit-learn>=1.3.0", "joblib>=1.3.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fem_placer*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
+
