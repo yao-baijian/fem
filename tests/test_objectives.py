@@ -360,6 +360,35 @@ class TestExportPlacementQUBO:
         assert torch.allclose(qubo_energy, expected, atol=1e-4), \
             f"Feasible energy: {qubo_energy.item():.4f} != expected {expected.item():.4f}"
 
+    def test_qubo_hpwl_matches_direct_sum(self):
+        """Test that 0.5*x^T(F⊗D)x == Σ_{i<j} F[i,j]*D[a_i,a_j] for random problems."""
+        torch.manual_seed(42)
+        m, n = 3, 5
+        F = torch.rand(m, m)
+        F = F + F.T  # symmetric
+
+        coords = torch.rand(n, 2) * 10
+        D = objectives.get_site_distance_matrix(coords)
+
+        # Random hard assignment: inst 0->site 1, inst 1->site 3, inst 2->site 0
+        assign = [1, 3, 0]
+        x = torch.zeros(m * n)
+        for i, a in enumerate(assign):
+            x[i * n + a] = 1.0
+
+        # Method 1: QUBO
+        FkD = torch.kron(F, D)
+        qubo_hpwl = 0.5 * x @ FkD @ x
+
+        # Method 2: direct sum over i<j
+        direct_hpwl = sum(
+            F[i, j] * D[assign[i], assign[j]]
+            for i in range(m) for j in range(i + 1, m)
+        )
+
+        assert abs(qubo_hpwl.item() - direct_hpwl) < 1e-4, \
+            f"QUBO HPWL {qubo_hpwl.item():.6f} != direct {direct_hpwl:.6f}"
+
     def test_decode_roundtrip(self, small_problem):
         """Test decode_qubo_solution roundtrip."""
         m, n, _, site_coords = small_problem

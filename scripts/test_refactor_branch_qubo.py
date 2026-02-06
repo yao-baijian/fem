@@ -19,7 +19,6 @@ from fem_placer import (
 )
 from fem_placer.utils import parse_fpga_design
 
-# Configuration - MUST match master branch for fair comparison!
 num_trials = 10
 num_steps = 2000
 dev = 'cpu'
@@ -32,7 +31,6 @@ print("Testing xw/refactor Branch FPGA Placement (QUBO Algorithm)")
 print("=" * 80)
 
 print("\nINFO: Initializing FPGA placer...")
-# IMPORTANT: Use SAME utilization as master branch for fair comparison!
 fpga_placer = FpgaPlacer(utilization_factor=0.3)
 
 print(f"INFO: Loading FPGA design from {dcp_file}...")
@@ -55,12 +53,10 @@ print(f"INFO: Number of sites: {num_site}")
 print(f"INFO: Area dimensions: {area_length} × {area_width} = {area_size}")
 print(f"INFO: Grid size: {area_length} × {area_length} = {area_length ** 2} positions")
 
-# Create site coordinates matrix - MUST use same coordinate system as master!
-# Master uses simple [0, area_length) x [0, area_length) coordinates during optimization
 print("\nINFO: Creating site coordinates matrix for entire grid...")
 logic_site_coords = torch.cartesian_prod(
     torch.arange(area_length, dtype=torch.float32),  # x: [0, 18]
-    torch.arange(area_length, dtype=torch.float32)   # y: [0, 18] - NOT centered during optimization!
+    torch.arange(area_length, dtype=torch.float32)   # y: [0, 18]
 )
 print(f"INFO: Site coordinates matrix shape: {logic_site_coords.shape}")
 print(f"INFO: Grid covers all {area_length}×{area_length}={logic_site_coords.shape[0]} positions")
@@ -73,9 +69,8 @@ print(f"  QUBO distribution: ~{qubo_memory_mb:.2f} MB")
 # Set up visualization
 drawer = PlacementDrawer(placer=fpga_placer, num_subplots=5, debug_mode=False)
 
-# Create QUBO optimizer (matches master branch algorithm)
+# Create QUBO optimizer
 print("\nINFO: Setting up QUBO optimizer...")
-# IMPORTANT: constraint_weight must match master: num_inst / 2
 constraint_weight = num_inst / 2.0
 print(f"INFO: Constraint weight (alpha): {constraint_weight}")
 
@@ -111,7 +106,7 @@ best_idx = torch.argmin(result)
 print(f"\nINFO: Best trial index: {best_idx}")
 print(f"INFO: Optimizer HPWL (expected over soft probabilities): {result[best_idx]:.2f}")
 
-# Extract best solution - config is grid coordinates from infer_placements
+# Extract best solution
 print("\nINFO: Extracting best coordinates...")
 grid_coords = config[best_idx]  # Shape: [num_inst, 2] - grid coordinates (0-18)!
 

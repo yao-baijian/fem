@@ -559,7 +559,7 @@ def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
 
 def infer_placements(J, p, area_width, site_coords_matrix):
     """
-    Infer final placements from probability distribution (matches master exactly).
+    Infer final placements from probability distribution.
 
     Args:
         J: Coupling matrix [num_instances, num_instances]
@@ -571,7 +571,6 @@ def infer_placements(J, p, area_width, site_coords_matrix):
         inst_coords: Instance coordinates [batch_size, num_instances, 2]
         hpwl: HPWL values [batch_size]
     """
-    # IMPORTANT: Must match master's implementation exactly
     inst_indices = torch.argmax(p, dim=2)
     inst_coords = get_inst_coords_from_index(inst_indices, area_width)
     result = get_hpwl_loss_qubo(J, p, site_coords_matrix)
