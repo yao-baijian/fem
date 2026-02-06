@@ -2,16 +2,6 @@
 
 A modular FPGA placement toolkit using Free Energy Minimization (FEM) with QUBO formulation for optimization.
 
-## 🎯 Key Features
-
-- **Clean Architecture**: Self-contained `fem_placer` package with no external dependencies
-- **QUBO Formulation**: Uses site coordinate matrices for placement optimization
-- **Complete Pipeline**: Placement → Legalization → Routing → Visualization
-- **Multiple Solvers**: FEM-based optimizer + Simulated Bifurcation baseline
-- **ML Support**: Parameter prediction using Random Forest (optional)
-- **Timing-Aware**: Congestion and timing analysis tools
-- **Well-Tested**: 50+ unit tests with comprehensive coverage
-
 ## 📦 Project Structure
 
 ```
@@ -104,6 +94,15 @@ pip install rapidwright
 
 # Optional: ML dependencies
 pip install -e ".[ml]"
+```
+
+**Build Documentations**
+```bash
+uv pip install ".[docs]"
+
+./build_docs.sh build
+
+./build_docs.sh serve
 ```
 
 ## 📖 Usage
