@@ -35,6 +35,8 @@ from .objectives import (
     manual_grad_hpwl_loss,
     manual_grad_constraint_loss,
     manual_grad_placement,
+    export_placement_qubo,
+    decode_qubo_solution,
 )
 
 # Hypergraph balanced min-cut
@@ -83,6 +85,8 @@ __all__ = [
     'manual_grad_hpwl_loss',
     'manual_grad_constraint_loss',
     'manual_grad_placement',
+    'export_placement_qubo',
+    'decode_qubo_solution',
 
     # Hypergraph balanced min-cut
     'balance_constrain',

@@ -442,6 +442,82 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
 # Inference Functions (QUBO approach)
 # =============================================================================
 
+def export_placement_qubo(F, site_coords_matrix, lam, mu):
+    """
+    Export the full QUBO matrix for SB baseline solver.
+
+    Constructs a single Q matrix encoding:
+        argmin_{x,s} x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx - s‖²
+
+    where x ∈ {0,1}^{mn} are placement variables and s ∈ {0,1}^n are slack variables.
+
+    Args:
+        F: Coupling matrix [m, m] (flow/connectivity between instances)
+        site_coords_matrix: Site coordinates [n, 2]
+        lam: Weight for one-hot constraint (each instance picks exactly one site)
+        mu: Weight for at-most-one constraint (each site used at most once)
+
+    Returns:
+        Q_full: QUBO matrix [(mn+n), (mn+n)]
+        metadata: Dict with 'm', 'n', 'site_coords'
+    """
+    m = F.shape[0]
+    n = site_coords_matrix.shape[0]
+    device = F.device
+    dtype = F.dtype
+
+    D = get_site_distance_matrix(site_coords_matrix)
+
+    # Q_xx block: F⊗D + λ(I_m⊗J_n) + μ(J_m⊗I_n) - 2λ·I_{mn}
+    ones_n = torch.ones(n, n, device=device, dtype=dtype)
+    ones_m = torch.ones(m, m, device=device, dtype=dtype)
+    I_n = torch.eye(n, device=device, dtype=dtype)
+    I_m = torch.eye(m, device=device, dtype=dtype)
+
+    Q_xx = (torch.kron(F, D)
+            + lam * torch.kron(I_m, ones_n)
+            + mu * torch.kron(ones_m, I_n)
+            - 2 * lam * torch.eye(m * n, device=device, dtype=dtype))
+
+    # Q_xs block: -μ·B^T where B^T = 1_m ⊗ I_n ∈ R^{mn×n}
+    B_T = torch.kron(torch.ones(m, 1, device=device, dtype=dtype), I_n)
+    Q_xs = -mu * B_T
+
+    # Q_sx block: -μ·B
+    Q_sx = Q_xs.T
+
+    # Q_ss block: μ·I_n
+    Q_ss = mu * I_n
+
+    # Assemble full Q
+    Q_top = torch.cat([Q_xx, Q_xs], dim=1)
+    Q_bot = torch.cat([Q_sx, Q_ss], dim=1)
+    Q_full = torch.cat([Q_top, Q_bot], dim=0)
+
+    metadata = {'m': m, 'n': n, 'site_coords': site_coords_matrix}
+    return Q_full, metadata
+
+
+def decode_qubo_solution(z, m, n, site_coords_matrix):
+    """
+    Decode a QUBO solution vector back into placement assignments.
+
+    Args:
+        z: Binary solution vector [mn + n]
+        m: Number of instances
+        n: Number of sites
+        site_coords_matrix: Site coordinates [n, 2]
+
+    Returns:
+        site_indices: Assigned site index for each instance [m]
+        coords: Coordinates for each instance [m, 2]
+    """
+    x = z[:m * n].reshape(m, n)
+    site_indices = torch.argmax(x, dim=1)
+    coords = site_coords_matrix[site_indices]
+    return site_indices, coords
+
+
 def infer_placements(J, p, area_width, site_coords_matrix):
     """
     Infer final placements from probability distribution (matches master exactly).
