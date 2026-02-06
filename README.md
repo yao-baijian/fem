@@ -24,7 +24,6 @@ fem/
 │   ├── router.py                # Connection routing
 │   ├── drawer.py                # Visualization tools
 │   ├── timer.py                 # Timing-aware placement
-│   ├── solver_sb.py             # Simulated Bifurcation solver
 │   ├── hyper_bmincut.py         # Hypergraph balanced min-cut
 │   ├── grid.py                  # Grid management
 │   ├── net_manager.py           # Network connectivity
@@ -189,21 +188,6 @@ print(f"HPWL after legalization: {hpwl_after['hpwl_no_io']:.2f}")
 print(f"Overlaps: {overlap}")
 ```
 
-### Using Simulated Bifurcation Solver
-
-```python
-from fem_placer import SBSolver
-
-# Create SB solver
-solver = SBSolver(mode='discrete', heated=True, device='cpu')
-
-# Solve Ising problem
-spins, energy = solver.solve_ising(J, agents=10, max_steps=5000)
-
-# Solve QUBO problem
-bits, energy = solver.solve_qubo(Q, agents=10, max_steps=5000)
-```
-
 ### ML Parameter Prediction (Optional)
 
 ```python
@@ -251,7 +235,6 @@ The optimizer uses a QUBO (Quadratic Unconstrained Binary Optimization) formulat
 - **Legalizer**: Resolves overlaps using greedy and global optimization
 - **Router**: Manhattan routing for visualization
 - **Timer**: Timing-aware and congestion-aware placement
-- **SBSolver**: Simulated Bifurcation baseline solver
 
 ## 🔧 Advanced Features
 

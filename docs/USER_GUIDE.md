@@ -416,26 +416,6 @@ congestion_hpwl = timer.calculate_congestion_aware_hpwl(
 )
 ```
 
-### Using Simulated Bifurcation Solver
-
-Alternative solver for comparison:
-
-```python
-from fem_placer import SBSolver
-
-# Create SB solver
-sb_solver = SBSolver(mode='discrete', heated=True, device='cpu')
-
-# Solve as QUBO problem
-# First, create QUBO matrix from connectivity
-Q = create_qubo_matrix(J, site_coords)  # User-defined function
-
-# Solve
-bits, energy = sb_solver.solve_qubo(Q, agents=10, max_steps=5000)
-
-print(f"SB solution energy: {energy:.2f}")
-```
-
 ### Hypergraph Partitioning
 
 For hierarchical placement or partitioning:

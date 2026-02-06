@@ -249,8 +249,7 @@ Now that you've run a basic placement:
 1. **Explore Parameters**: Adjust `utilization_factor`, `num_trials`, `num_steps`
 2. **Try Different Designs**: Test on various DCP files
 3. **Add Timing**: Use `Timer` for timing-aware placement
-4. **Compare Solvers**: Try `SBSolver` for comparison
-5. **Read Documentation**: Check [User Guide](USER_GUIDE.md) and [API Reference](API_REFERENCE.md)
+4. **Read Documentation**: Check [User Guide](USER_GUIDE.md) and [API Reference](API_REFERENCE.md)
 
 ## Common Issues
 

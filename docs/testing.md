@@ -113,24 +113,6 @@ def test_timing_based_hpwl():
     assert hpwl >= 0
 ```
 
-### tests/test_sb_solver.py
-
-Tests for Simulated Bifurcation solver.
-
-```python
-def test_sb_solver_ising():
-    """Test SB solver on Ising problem"""
-    solver = SBSolver(mode='discrete', heated=True, device='cpu')
-
-    # Small Ising problem
-    J = torch.tensor([[0., -1.], [-1., 0.]])
-
-    spins, energy = solver.solve_ising(J, agents=5, max_steps=1000)
-
-    assert spins.shape[0] == 2  # Two spins
-    assert isinstance(energy, float)
-```
-
 ### tests/test_fpga_placement.py
 
 Integration tests for complete pipeline.

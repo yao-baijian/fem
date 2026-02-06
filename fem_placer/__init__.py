@@ -11,7 +11,6 @@ from .legalizer import Legalizer
 from .router import Router
 from .optimizer import FPGAPlacementOptimizer
 from .timer import Timer
-from .solver_sb import SBSolver, SBPlacementSolver
 
 # QUBO approach (site_coords_matrix based)
 from .objectives import (
@@ -61,8 +60,6 @@ __all__ = [
     'Router',
     'FPGAPlacementOptimizer',
     'Timer',
-    'SBSolver',
-    'SBPlacementSolver',
 
     # QUBO functions
     'get_inst_coords_from_index',
