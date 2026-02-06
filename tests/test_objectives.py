@@ -397,5 +397,267 @@ class TestExportPlacementQUBO:
         assert site_indices[1].item() == 3
 
 
+class TestSBSolverPlacement:
+    """Test SBSolver implicit Kronecker placement solver."""
+
+    @pytest.fixture
+    def small_problem(self):
+        """Create a small 2-instance, 4-site placement problem."""
+        m, n = 2, 4
+        F = torch.tensor([[0.0, 1.0],
+                          [1.0, 0.0]])
+        site_coords = torch.tensor([[0.0, 0.0],
+                                     [1.0, 0.0],
+                                     [0.0, 1.0],
+                                     [1.0, 1.0]])
+        D = objectives.get_site_distance_matrix(site_coords)
+        return m, n, F, D, site_coords
+
+    def test_qubo_matvec_matches_dense(self, small_problem):
+        """Test _qubo_matvec_batched matches explicit Q @ v."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, site_coords = small_problem
+        lam, mu = 2.0, 3.0
+
+        # Build dense Q for reference
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+
+        # Random test vectors (N, agents)
+        N = m * n + n
+        torch.manual_seed(42)
+        V = torch.randn(N, 5)
+
+        # Implicit matvec
+        result_implicit = SBSolver._qubo_matvec_batched(V, F, D, lam, mu, m, n)
+
+        # Dense matvec
+        result_dense = Q @ V
+
+        assert torch.allclose(result_implicit, result_dense, atol=1e-4), \
+            f"Matvec mismatch: max diff = {(result_implicit - result_dense).abs().max()}"
+
+    def test_qubo_matvec_single_vector(self, small_problem):
+        """Test _qubo_matvec_batched with a single column."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, site_coords = small_problem
+        lam, mu = 1.0, 1.0
+
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+
+        N = m * n + n
+        torch.manual_seed(123)
+        v = torch.randn(N, 1)
+
+        result_implicit = SBSolver._qubo_matvec_batched(v, F, D, lam, mu, m, n)
+        result_dense = Q @ v
+
+        assert torch.allclose(result_implicit, result_dense, atol=1e-4), \
+            f"Single vector matvec mismatch: max diff = {(result_implicit - result_dense).abs().max()}"
+
+    def test_solve_placement_returns_valid_shape(self, small_problem):
+        """Test solve_placement returns correct shapes."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, _ = small_problem
+        lam, mu = 2.0, 3.0
+        N = m * n + n
+
+        solver = SBSolver(mode='discrete', heated=False)
+        solution, energy = solver.solve_placement(
+            F, D, lam, mu, m, n,
+            agents=5, max_steps=200,
+            early_stopping=False, best_only=True,
+            verbose=False,
+        )
+
+        assert solution.shape == (N,), f"Expected shape ({N},), got {solution.shape}"
+        assert energy.dim() == 0, "Expected scalar energy"
+        # Solution should be binary
+        assert torch.all((solution == 0) | (solution == 1)), \
+            "Solution should be binary {0, 1}"
+
+    def test_solve_placement_energy_correct(self, small_problem):
+        """Test that returned energy matches explicit z^T Q z."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, site_coords = small_problem
+        lam, mu = 2.0, 3.0
+
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+
+        solver = SBSolver(mode='discrete', heated=False)
+        solution, energy = solver.solve_placement(
+            F, D, lam, mu, m, n,
+            agents=5, max_steps=500,
+            early_stopping=False, best_only=True,
+            verbose=False,
+        )
+
+        # Compute explicit energy
+        explicit_energy = solution @ Q @ solution
+
+        assert torch.allclose(energy, explicit_energy, atol=1e-3), \
+            f"Energy mismatch: returned {energy.item():.4f}, explicit {explicit_energy.item():.4f}"
+
+    def test_frobenius_norm_matches_dense(self, small_problem):
+        """Test _compute_frobenius_norm_sq matches dense ‖Q‖²_F."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, site_coords = small_problem
+        lam, mu = 2.0, 3.0
+
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+        dense_norm2 = (Q ** 2).sum()
+
+        implicit_norm2 = SBSolver._compute_frobenius_norm_sq(F, D, lam, mu, m, n)
+
+        assert torch.allclose(dense_norm2, implicit_norm2, rtol=1e-4), \
+            f"Frobenius norm mismatch: dense={dense_norm2.item():.4f}, implicit={implicit_norm2.item():.4f}"
+
+    def test_sb_ising_tensor_matvec_matches_dense(self, small_problem):
+        """Test implicit SB Ising tensor matvec matches dense sb_tensor @ v."""
+        from fem_placer.solver_sb import SBSolver
+        m, n, F, D, site_coords = small_problem
+        lam, mu = 2.0, 3.0
+        N = m * n + n
+
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+
+        # Build dense sb_tensor (library's Ising conversion for binary domain)
+        Q_sym = (Q + Q.T) / 2
+        J_ising = -0.5 * Q_sym.clone()
+        torch.diagonal(J_ising)[...] = 0.0
+        h_dense = 0.5 * (Q_sym.sum(1) - Q_sym.diagonal())
+        sb_tensor = torch.zeros(N+1, N+1)
+        sb_tensor[:N, :N] = J_ising
+        sb_tensor[:N, N] = -h_dense
+        sb_tensor[N, :N] = -h_dense
+
+        # Implicit Ising quantities
+        F_diag = F.diagonal()
+        D_diag = D.diagonal()
+        FkD_diag = (F_diag.unsqueeze(1) * D_diag.unsqueeze(0)).reshape(m * n)
+        diag_Q = torch.cat([FkD_diag + (mu - lam), mu * torch.ones(n)])
+        Q_ones = SBSolver._qubo_matvec_batched(
+            torch.ones(N, 1), F, D, lam, mu, m, n
+        ).squeeze(1)
+        h_implicit = 0.5 * (Q_ones - diag_Q)
+
+        # Test matvec on random vectors
+        torch.manual_seed(42)
+        V = torch.randn(N + 1, 5)
+        result_dense = sb_tensor @ V
+
+        Qv = SBSolver._qubo_matvec_batched(V[:N], F, D, lam, mu, m, n)
+        Jv = -0.5 * (Qv - diag_Q.unsqueeze(1) * V[:N])
+        result_implicit = torch.empty_like(V)
+        result_implicit[:N] = Jv - h_implicit.unsqueeze(1) * V[N:N+1]
+        result_implicit[N] = -(h_implicit.unsqueeze(0) @ V[:N]).squeeze(0)
+
+        assert torch.allclose(result_implicit, result_dense, atol=1e-4), \
+            f"SB tensor matvec mismatch: max diff = {(result_implicit - result_dense).abs().max()}"
+
+    def test_identical_trajectory_matches_dense_loop(self):
+        """Run dense and implicit SB loops from same init; verify identical solutions."""
+        from fem_placer.solver_sb import SBSolver
+        from numpy import minimum as np_minimum
+
+        m, n = 3, 6
+        torch.manual_seed(10)
+        F = torch.rand(m, m)
+        F = F + F.T
+        F.fill_diagonal_(0)
+        site_coords = torch.rand(n, 2) * 5
+        D = objectives.get_site_distance_matrix(site_coords)
+        lam, mu = 5.0, 5.0
+        N = m * n + n
+        N_sb = N + 1
+
+        Q, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu)
+
+        # Dense sb_tensor
+        Q_sym = (Q + Q.T) / 2
+        J_ising = -0.5 * Q_sym.clone()
+        torch.diagonal(J_ising)[...] = 0.0
+        h_dense = 0.5 * (Q_sym.sum(1) - Q_sym.diagonal())
+        sb_tensor = torch.zeros(N_sb, N_sb)
+        sb_tensor[:N, :N] = J_ising
+        sb_tensor[:N, N] = -h_dense
+        sb_tensor[N, :N] = -h_dense
+
+        # Implicit quantities
+        F_diag = F.diagonal()
+        D_diag = D.diagonal()
+        FkD_diag = (F_diag.unsqueeze(1) * D_diag.unsqueeze(0)).reshape(m * n)
+        diag_Q = torch.cat([FkD_diag + (mu - lam), mu * torch.ones(n)])
+        Q_ones = SBSolver._qubo_matvec_batched(
+            torch.ones(N, 1), F, D, lam, mu, m, n
+        ).squeeze(1)
+        h_implicit = 0.5 * (Q_ones - diag_Q)
+
+        # Same scale
+        a0 = 0.5 * N ** 0.5 / torch.sqrt((sb_tensor ** 2).sum())
+        activation = torch.sign
+
+        agents = 5
+        max_steps = 2000
+        dt, ps, hc = 0.1, 0.01, 0.06
+
+        torch.manual_seed(42)
+        pos_init = 2 * torch.rand(N_sb, agents) - 1
+        mom_init = 2 * torch.rand(N_sb, agents) - 1
+        pos_d, mom_d = pos_init.clone(), mom_init.clone()
+        pos_i, mom_i = pos_init.clone(), mom_init.clone()
+
+        for step in range(max_steps):
+            pressure = np_minimum(dt * step * ps, 1.0)
+            mc = dt * (pressure - 1.0)
+            pc = dt
+            qc = dt * a0
+
+            mc_d, mc_i = mom_d.clone(), mom_i.clone()
+
+            # Dense (walls before heat, matching library)
+            mom_d = mom_d + mc * pos_d
+            pos_d = pos_d + pc * mom_d
+            mom_d = mom_d + qc * (sb_tensor @ activation(pos_d))
+            mom_d[torch.abs(pos_d) > 1.0] = 0.0
+            torch.clip(pos_d, -1.0, 1.0, out=pos_d)
+            mom_d = mom_d + dt * hc * mc_d
+
+            # Implicit (walls before heat, matching library)
+            mom_i = mom_i + mc * pos_i
+            pos_i = pos_i + pc * mom_i
+            act_i = activation(pos_i)
+            Qv = SBSolver._qubo_matvec_batched(act_i[:N], F, D, lam, mu, m, n)
+            Jv = -0.5 * (Qv - diag_Q.unsqueeze(1) * act_i[:N])
+            sb_res = torch.empty_like(act_i)
+            sb_res[:N] = Jv - h_implicit.unsqueeze(1) * act_i[N:N+1]
+            sb_res[N] = -(h_implicit.unsqueeze(0) @ act_i[:N]).squeeze(0)
+            mom_i = mom_i + qc * sb_res
+            mom_i[torch.abs(pos_i) > 1.0] = 0.0
+            torch.clip(pos_i, -1.0, 1.0, out=pos_i)
+            mom_i = mom_i + dt * hc * mc_i
+
+        # Positions must match exactly (determines spins)
+        assert torch.allclose(pos_d, pos_i, atol=1e-4), \
+            f"Position mismatch after {max_steps} steps: {(pos_d - pos_i).abs().max()}"
+
+        # Final spins must be identical
+        spins_d = torch.where(pos_d >= 0.0, 1.0, -1.0)
+        spins_i = torch.where(pos_i >= 0.0, 1.0, -1.0)
+        assert torch.equal(spins_d, spins_i), "Final spins differ"
+
+        # Binary solutions must be identical
+        real_d = spins_d[N] * spins_d[:N]
+        real_i = spins_i[N] * spins_i[:N]
+        binary_d = ((real_d + 1.0) / 2.0).T
+        binary_i = ((real_i + 1.0) / 2.0).T
+        assert torch.equal(binary_d, binary_i), "Binary solutions differ"
+
+        # Energies must match
+        energies_d = (binary_d @ Q * binary_d).sum(dim=1)
+        energies_i = (binary_i @ Q * binary_i).sum(dim=1)
+        assert torch.allclose(energies_d, energies_i, atol=1e-3), \
+            f"Energy mismatch: {(energies_d - energies_i).abs().max()}"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
