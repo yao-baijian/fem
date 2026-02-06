@@ -442,7 +442,7 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
 # Inference Functions (QUBO approach)
 # =============================================================================
 
-def export_placement_qubo(F, site_coords_matrix, lam, mu):
+def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     """
     Export the full QUBO matrix for SB baseline solver.
 
@@ -456,6 +456,8 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu):
         site_coords_matrix: Site coordinates [n, 2]
         lam: Weight for one-hot constraint (each instance picks exactly one site)
         mu: Weight for at-most-one constraint (each site used at most once)
+        format: 'symmetric' (default, backward-compatible) or 'upper_triangular'
+                (for SB library: off-diag Q[i,j] holds full coefficient of x_i*x_j)
 
     Returns:
         Q_full: QUBO matrix [(mn+n), (mn+n)]
@@ -494,6 +496,9 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu):
     Q_bot = torch.cat([Q_sx, Q_ss], dim=1)
     Q_full = torch.cat([Q_top, Q_bot], dim=0)
 
+    if format == 'upper_triangular':
+        Q_full = torch.triu(Q_full) + torch.triu(Q_full, diagonal=1)
+
     metadata = {'m': m, 'n': n, 'site_coords': site_coords_matrix}
     return Q_full, metadata
 
@@ -516,6 +521,40 @@ def decode_qubo_solution(z, m, n, site_coords_matrix):
     site_indices = torch.argmax(x, dim=1)
     coords = site_coords_matrix[site_indices]
     return site_indices, coords
+
+
+def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
+                       agents=128, max_steps=10000, best_only=True, **sb_kwargs):
+    """
+    Solve placement QUBO using the simulated-bifurcation library.
+
+    Args:
+        F: Coupling matrix [m, m] (flow/connectivity between instances)
+        site_coords_matrix: Site coordinates [n, 2]
+        lam: Weight for one-hot constraint
+        mu: Weight for at-most-one constraint
+        agents: Number of SB agents (parallel runs)
+        max_steps: Maximum SB iterations
+        best_only: If True, return only the best solution
+        **sb_kwargs: Additional keyword arguments passed to sb.minimize
+
+    Returns:
+        site_indices: Assigned site index for each instance [m]
+        coords: Coordinates for each instance [m, 2]
+        energy: Scalar energy of the best solution
+        metadata: Dict with 'm', 'n', 'site_coords'
+    """
+    import simulated_bifurcation as sb
+
+    Q, meta = export_placement_qubo(F, site_coords_matrix, lam, mu,
+                                    format='upper_triangular')
+    z, energy = sb.minimize(Q, domain='binary', agents=agents,
+                            max_steps=max_steps, best_only=best_only,
+                            **sb_kwargs)
+    z_tensor = z if isinstance(z, torch.Tensor) else torch.tensor(z, dtype=Q.dtype)
+    site_indices, coords = decode_qubo_solution(z_tensor, meta['m'], meta['n'],
+                                                meta['site_coords'])
+    return site_indices, coords, energy, meta
 
 
 def infer_placements(J, p, area_width, site_coords_matrix):

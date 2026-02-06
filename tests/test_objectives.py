@@ -397,5 +397,66 @@ class TestExportPlacementQUBO:
         assert site_indices[1].item() == 3
 
 
+    def test_qubo_upper_triangular_format(self, small_problem):
+        """Test that upper_triangular format produces an upper triangular matrix."""
+        m, n, F, site_coords = small_problem
+        Q_ut, _ = objectives.export_placement_qubo(F, site_coords, lam=2.0, mu=3.0,
+                                                    format='upper_triangular')
+        # Strict lower triangle should be zero
+        lower = torch.tril(Q_ut, diagonal=-1)
+        assert torch.allclose(lower, torch.zeros_like(lower)), \
+            "Upper triangular format should have zeros below diagonal"
+
+    def test_qubo_upper_triangular_energy(self, small_problem):
+        """Test that z^T Q_ut z gives the same energy as z^T Q_sym z for binary z."""
+        m, n, F, site_coords = small_problem
+        lam, mu = 2.0, 3.0
+        Q_sym, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu,
+                                                     format='symmetric')
+        Q_ut, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu,
+                                                    format='upper_triangular')
+
+        # Feasible solution: instance 0 -> site 0, instance 1 -> site 3
+        x = torch.zeros(m * n)
+        x[0] = 1.0
+        x[7] = 1.0
+        s = torch.zeros(n)
+        s[0] = 1.0
+        s[3] = 1.0
+        z = torch.cat([x, s])
+
+        energy_sym = z @ Q_sym @ z
+        energy_ut = z @ Q_ut @ z
+        assert torch.allclose(energy_sym, energy_ut, atol=1e-5), \
+            f"Energies should match: symmetric={energy_sym.item():.4f} vs ut={energy_ut.item():.4f}"
+
+
+class TestSolvePlacementSB:
+    """Test solve_placement_sb convenience function."""
+
+    def test_solve_placement_sb(self):
+        """Integration test: solve a small placement problem with SB library."""
+        sb = pytest.importorskip("simulated_bifurcation")
+
+        m, n = 2, 4
+        F = torch.tensor([[0.0, 1.0],
+                          [1.0, 0.0]])
+        site_coords = torch.tensor([[0.0, 0.0],
+                                     [1.0, 0.0],
+                                     [0.0, 1.0],
+                                     [1.0, 1.0]])
+
+        site_indices, coords, energy, meta = objectives.solve_placement_sb(
+            F, site_coords, lam=10.0, mu=10.0,
+            agents=64, max_steps=5000, best_only=True
+        )
+
+        assert site_indices.shape == (m,), f"Expected shape ({m},), got {site_indices.shape}"
+        assert coords.shape == (m, 2), f"Expected shape ({m}, 2), got {coords.shape}"
+        # Each instance should pick a distinct site
+        assert site_indices[0].item() != site_indices[1].item(), \
+            "Instances should be placed on distinct sites"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
