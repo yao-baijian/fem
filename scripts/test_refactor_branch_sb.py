@@ -69,9 +69,10 @@ qubo_memory_mb = N * N * 4 / 1024 / 1024
 print(f"\nMemory usage:")
 print(f"  QUBO matrix ({N} x {N}): ~{qubo_memory_mb:.2f} MB")
 
-# Strong constraint weights to enforce feasibility on combinatorial solver
-lam = 100.0 * num_inst
-mu = 100.0 * num_inst
+# Constraint weights: large enough to enforce feasibility, but not so large
+# that they drown out HPWL. Site distances are O(area_length), so scale with that.
+lam = 10.0 * area_length
+mu = 10.0 * area_length
 print(f"\nINFO: Constraint weights: lam={lam}, mu={mu}")
 print(f"INFO: SB agents: {agents}, max_steps: {max_steps}")
 
