@@ -447,7 +447,7 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     Export the full QUBO matrix for SB baseline solver.
 
     Constructs a single Q matrix encoding:
-        argmin_{x,s} x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx - s‖²
+        argmin_{x,s} ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx - s‖²
 
     where x ∈ {0,1}^{mn} are placement variables and s ∈ {0,1}^n are slack variables.
 
@@ -470,13 +470,13 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
 
     D = get_site_distance_matrix(site_coords_matrix)
 
-    # Q_xx block: F⊗D + λ(I_m⊗J_n) + μ(J_m⊗I_n) - 2λ·I_{mn}
+    # Q_xx block: ½F⊗D + λ(I_m⊗J_n) + μ(J_m⊗I_n) - 2λ·I_{mn}
     ones_n = torch.ones(n, n, device=device, dtype=dtype)
     ones_m = torch.ones(m, m, device=device, dtype=dtype)
     I_n = torch.eye(n, device=device, dtype=dtype)
     I_m = torch.eye(m, device=device, dtype=dtype)
 
-    Q_xx = (torch.kron(F, D)
+    Q_xx = (0.5 * torch.kron(F, D)
             + lam * torch.kron(I_m, ones_n)
             + mu * torch.kron(ones_m, I_n)
             - 2 * lam * torch.eye(m * n, device=device, dtype=dtype))

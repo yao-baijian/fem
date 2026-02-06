@@ -319,7 +319,7 @@ class TestExportPlacementQUBO:
         # Compute expected energy manually:
         D = objectives.get_site_distance_matrix(site_coords)
         FkD = torch.kron(F, D)
-        hpwl_term = x @ FkD @ x
+        hpwl_term = 0.5 * x @ FkD @ x
 
         x_mat = x.reshape(m, n)
         row_sums = x_mat.sum(dim=1)
@@ -354,7 +354,7 @@ class TestExportPlacementQUBO:
         # HPWL term minus constant offset λ·m
         D = objectives.get_site_distance_matrix(site_coords)
         FkD = torch.kron(F, D)
-        hpwl_only = x @ FkD @ x
+        hpwl_only = 0.5 * x @ FkD @ x
         expected = hpwl_only - lam * m
 
         assert torch.allclose(qubo_energy, expected, atol=1e-4), \

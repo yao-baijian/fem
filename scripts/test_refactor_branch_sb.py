@@ -69,10 +69,9 @@ qubo_memory_mb = N * N * 4 / 1024 / 1024
 print(f"\nMemory usage:")
 print(f"  QUBO matrix ({N} x {N}): ~{qubo_memory_mb:.2f} MB")
 
-# Constraint weights: large enough to enforce feasibility, but not so large
-# that they drown out HPWL. Site distances are O(area_length), so scale with that.
-lam = 10.0 * area_length
-mu = 10.0 * area_length
+# Constraint weights matching FEM optimizer (alpha = num_inst / 2)
+lam = num_inst / 2.0
+mu = num_inst / 2.0
 print(f"\nINFO: Constraint weights: lam={lam}, mu={mu}")
 print(f"INFO: SB agents: {agents}, max_steps: {max_steps}")
 
