@@ -2,43 +2,6 @@
 
 A modular FPGA placement toolkit using Free Energy Minimization (FEM) with QUBO formulation for optimization.
 
-## 📦 Project Structure
-
-```
-fem/
-├── fem_placer/                  # Main placement package
-│   ├── placer.py                # RapidWright interface & design loading
-│   ├── optimizer.py             # FEM-based placement optimizer
-│   ├── objectives.py            # HPWL and constraint functions (QUBO)
-│   ├── legalizer.py             # Placement legalization
-│   ├── router.py                # Connection routing
-│   ├── drawer.py                # Visualization tools
-│   ├── timer.py                 # Timing-aware placement
-│   ├── hyper_bmincut.py         # Hypergraph balanced min-cut
-│   ├── grid.py                  # Grid management
-│   ├── net_manager.py           # Network connectivity
-│   └── utils.py                 # Design parsing utilities
-├── ml_alpha/                    # ML parameter prediction (optional)
-│   ├── model.py                 # Random Forest model
-│   ├── dataset.py               # Feature extraction
-│   ├── train.py                 # Training utilities
-│   └── predict.py               # Prediction interface
-├── tests/                       # Test suite (50+ tests)
-│   ├── test_objectives.py       # Objective function tests
-│   ├── test_timer.py            # Timing analysis tests
-│   ├── test_sb_solver.py        # SB solver tests
-│   ├── test_ml_alpha.py         # ML module tests
-│   └── test_fpga_placement.py   # Integration test
-├── benchmarks/                  # Benchmark problems
-│   ├── bmincut/                 # Balanced min-cut
-│   ├── maxcut/                  # Max-cut (Gset)
-│   └── maxsat/                  # Max-SAT
-├── tcl/                         # Vivado synthesis scripts
-├── scripts/                     # Test and utility scripts
-├── pyproject.toml               # Modern Python package config
-└── README.md
-```
-
 ## 🚀 Installation
 
 ### Prerequisites
