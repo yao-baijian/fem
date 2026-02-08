@@ -444,28 +444,27 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
 
 def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     """
-    Export the QUBO matrix for SB baseline solver (without slack variables).
+    Export the full QUBO matrix with slack variables for SB solver.
 
     Constructs a single Q matrix encoding:
-        argmin_x ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ·Σ_s Σ_{i<j} x_{i,s}·x_{j,s}
+        argmin_{x,s} ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx + s - 1‖²
 
-    where x ∈ {0,1}^{mn} are placement variables.
+    where x ∈ {0,1}^{mn} are placement variables,
+          s ∈ {0,1}^n are slack variables (s_j=1 means site j is unused).
 
-    The at-most-one constraint penalizes conflict pairs (two instances on same site):
-    - Only off-diagonal instance pairs contribute, single usage is free
-    - This is equivalent to μ·x^T ((J_m - I_m) ⊗ I_n) x in QUBO form
-    - Q diagonal = -λ, which encourages each instance to pick a site
+    The at-most-one constraint uses equality form with slack:
+        Σ_i x_{i,s} + s_s = 1  for each site s
+    This forces: site unused (s=1) or used by exactly one instance (s=0).
 
     Args:
         F: Coupling matrix [m, m] (flow/connectivity between instances)
         site_coords_matrix: Site coordinates [n, 2]
         lam: Weight for one-hot constraint (each instance picks exactly one site)
         mu: Weight for at-most-one constraint (each site used at most once)
-        format: 'symmetric' (default, backward-compatible) or 'upper_triangular'
-                (for SB library: off-diag Q[i,j] holds full coefficient of x_i*x_j)
+        format: 'symmetric' (default) or 'upper_triangular'
 
     Returns:
-        Q_full: QUBO matrix [mn, mn]
+        Q_full: QUBO matrix [(mn+n), (mn+n)]
         metadata: Dict with 'm', 'n', 'site_coords'
     """
     m = F.shape[0]
@@ -475,33 +474,41 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
 
     D = get_site_distance_matrix(site_coords_matrix)
 
-    # Q matrix: ½F⊗D + λ(I_m⊗J_n) + μ((J_m - I_m)⊗I_n) - 2λ·I_{mn}
-    #
-    # Constraint breakdown:
-    # - HPWL: ½ x^T (F⊗D) x
-    # - One-hot: λ‖Ax - 1‖² where A = I_m⊗1_n^T
-    #   → expands to: λ(x^T A^T A x - 2 x^T A^T 1 + m)
-    #   → A^T A = I_m ⊗ J_n, drops constant λ·m
-    # - At-most-one: μ·Σ_s Σ_{i≠j} x_{i,s} x_{j,s}
-    #   → x^T ((J_m - I_m) ⊗ I_n) x
-    #   Only penalizes conflict pairs, not single-instance site usage.
-    #   Diagonal of Q: 0 + λ + 0 - 2λ = -λ (encourages assignment)
-
+    # --- Q_xx block [mn × mn] ---
+    # From HPWL: ½(F⊗D)
+    # From one-hot  λ‖Ax-1‖²: λ(I_m⊗J_n) - 2λ·I_{mn}  (drops constant λ·m)
+    # From at-most-one μ‖Bx+s-1‖²: μ(J_m⊗I_n) - 2μ·I_{mn}
     ones_n = torch.ones(n, n, device=device, dtype=dtype)
     ones_m = torch.ones(m, m, device=device, dtype=dtype)
     I_n = torch.eye(n, device=device, dtype=dtype)
     I_m = torch.eye(m, device=device, dtype=dtype)
+    I_mn = torch.eye(m * n, device=device, dtype=dtype)
 
-    Q = (0.5 * torch.kron(F, D)
-         + lam * torch.kron(I_m, ones_n)
-         + mu * torch.kron(ones_m - I_m, I_n)
-         - 2 * lam * torch.eye(m * n, device=device, dtype=dtype))
+    Q_xx = (0.5 * torch.kron(F, D)
+            + lam * torch.kron(I_m, ones_n)
+            + mu * torch.kron(ones_m, I_n)
+            - 2 * (lam + mu) * I_mn)
+
+    # --- Q_xs block [mn × n] ---
+    # From μ‖Bx+s-1‖²: cross term 2μ x^T B^T s → symmetric Q_xs = μ·B^T
+    # B = 1_m^T ⊗ I_n,  B^T = 1_m ⊗ I_n  ∈ R^{mn×n}
+    B_T = torch.kron(torch.ones(m, 1, device=device, dtype=dtype), I_n)
+    Q_xs = mu * B_T
+
+    # --- Q_ss block [n × n] ---
+    # From μ‖Bx+s-1‖²: s^T s - 2·1^T s → (for binary s: s²=s) → -μ·I_n
+    Q_ss = -mu * I_n
+
+    # Assemble full Q
+    Q_top = torch.cat([Q_xx, Q_xs], dim=1)
+    Q_bot = torch.cat([Q_xs.T, Q_ss], dim=1)
+    Q_full = torch.cat([Q_top, Q_bot], dim=0)
 
     if format == 'upper_triangular':
-        Q = torch.triu(Q) + torch.triu(Q, diagonal=1)
+        Q_full = torch.triu(Q_full) + torch.triu(Q_full, diagonal=1)
 
     metadata = {'m': m, 'n': n, 'site_coords': site_coords_matrix}
-    return Q, metadata
+    return Q_full, metadata
 
 
 def decode_qubo_solution(z, m, n, site_coords_matrix):
@@ -509,7 +516,7 @@ def decode_qubo_solution(z, m, n, site_coords_matrix):
     Decode a QUBO solution vector back into placement assignments.
 
     Args:
-        z: Binary solution vector [mn] (no slack variables)
+        z: Binary solution vector [mn + n] (x variables + slack variables)
         m: Number of instances
         n: Number of sites
         site_coords_matrix: Site coordinates [n, 2]
@@ -529,6 +536,9 @@ def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
     """
     Solve placement QUBO using the simulated-bifurcation library.
 
+    Uses discrete SB mode (dSB) which works well for placement QUBOs.
+    The ballistic mode fails on these problems due to large Ising external fields.
+
     Args:
         F: Coupling matrix [m, m] (flow/connectivity between instances)
         site_coords_matrix: Site coordinates [n, 2]
@@ -542,26 +552,25 @@ def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
     Returns:
         site_indices: Assigned site index for each instance [m]
         coords: Coordinates for each instance [m, 2]
-        energy: Scalar energy of the best solution
+        energy: Scalar energy of the best solution (QUBO energy)
         metadata: Dict with 'm', 'n', 'site_coords'
     """
     import simulated_bifurcation as sb
 
     Q, meta = export_placement_qubo(F, site_coords_matrix, lam, mu,
-                                    format='upper_triangular')
+                                    format='symmetric')
+    m, n = meta['m'], meta['n']
+
+    # Use discrete mode (dSB) - ballistic mode fails on placement QUBOs
+    sb_kwargs.setdefault('mode', 'discrete')
+
     z, energy = sb.minimize(Q, domain='binary', agents=agents,
                             max_steps=max_steps, best_only=best_only,
                             **sb_kwargs)
-    # Convert to tensor if needed
     z_tensor = z if isinstance(z, torch.Tensor) else torch.tensor(z, dtype=Q.dtype)
 
-    # Ensure z_tensor has correct size (should only contain x variables, not slack)
-    m, n = meta['m'], meta['n']
-    expected_size = m * n
-    if z_tensor.shape[0] > expected_size:
-        z_tensor = z_tensor[:expected_size]
-
-    site_indices, coords = decode_qubo_solution(z_tensor, m, n, meta['site_coords'])
+    site_indices, coords = decode_qubo_solution(z_tensor.float(), m, n,
+                                                meta['site_coords'])
     return site_indices, coords, energy, meta
 
 

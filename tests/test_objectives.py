@@ -280,7 +280,7 @@ class TestExportPlacementQUBO:
         m, n, F, site_coords = small_problem
         Q, meta = objectives.export_placement_qubo(F, site_coords, lam=1.0, mu=1.0)
 
-        expected_size = m * n  # No slack variables
+        expected_size = m * n + n  # x variables + slack variables
         assert Q.shape == (expected_size, expected_size), \
             f"Expected Q shape ({expected_size}, {expected_size}), got {Q.shape}"
         assert meta['m'] == m
@@ -294,10 +294,9 @@ class TestExportPlacementQUBO:
         assert torch.allclose(Q, Q.T, atol=1e-6), "Q_full should be symmetric"
 
     def test_qubo_energy_matches_hpwl_loss(self, small_problem):
-        """Test that x^T Q x matches the full objective up to a constant offset.
+        """Test that z^T Q z matches the full objective up to constant offsets.
 
-        The QUBO matrix drops the constant λ·m from ‖Ax-1‖² since it doesn't
-        affect the argmin. So: x^T Q x = objective - λ·m.
+        Dropped constants: λ·m (from one-hot) and μ·n (from at-most-one).
         """
         m, n, F, site_coords = small_problem
         lam, mu = 2.0, 3.0
@@ -308,10 +307,15 @@ class TestExportPlacementQUBO:
         x[0] = 1.0   # instance 0 picks site 0
         x[7] = 1.0   # instance 1 picks site 3
 
-        qubo_energy = x @ Q @ x
+        # Slack: s_j=1 if site j unused, s_j=0 if used
+        s = torch.ones(n)
+        s[0] = 0.0  # site 0 used
+        s[3] = 0.0  # site 3 used
 
-        # Compute expected energy manually:
-        # Energy = ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ·Σ_s Σ_{i<j} x_{i,s}·x_{j,s}
+        z = torch.cat([x, s])
+        qubo_energy = z @ Q @ z
+
+        # Compute expected energy manually
         D = objectives.get_site_distance_matrix(site_coords)
         FkD = torch.kron(F, D)
         hpwl_term = 0.5 * x @ FkD @ x
@@ -320,23 +324,20 @@ class TestExportPlacementQUBO:
         row_sums = x_mat.sum(dim=1)
         onehot_penalty = lam * ((row_sums - 1) ** 2).sum()
 
-        # At-most-one: count conflict pairs per site
         col_sums = x_mat.sum(dim=0)
-        atmost_penalty = mu * (col_sums * (col_sums - 1)).sum()  # Σ_s k_s*(k_s-1)
+        atmost_penalty = mu * ((col_sums + s - 1) ** 2).sum()
 
-        # Q drops constant λ·m from the one-hot constraint expansion
-        constant_offset = lam * m
+        # Q drops constants: λ·m from one-hot, μ·n from at-most-one
+        constant_offset = lam * m + mu * n
         expected_energy = hpwl_term + onehot_penalty + atmost_penalty - constant_offset
         assert torch.allclose(qubo_energy, expected_energy, atol=1e-4), \
             f"QUBO energy {qubo_energy.item():.4f} != expected {expected_energy.item():.4f}"
 
     def test_qubo_energy_feasible_zero_penalty(self, small_problem):
-        """Test that feasible solutions (distinct sites) have correct energy.
+        """Test that feasible solutions (distinct sites, correct slack) have zero penalty.
 
-        For feasible solution (one-hot satisfied, distinct sites):
-        - One-hot penalty: 0
-        - At-most-one penalty: 0 (no conflict pairs)
-        - QUBO energy = HPWL - λ·m
+        For feasible solution: one-hot=0, at-most-one=0.
+        QUBO energy = HPWL - λ·m - μ·n (dropped constants).
         """
         m, n, F, site_coords = small_problem
         lam, mu = 10.0, 10.0
@@ -347,13 +348,18 @@ class TestExportPlacementQUBO:
         x[1] = 1.0  # inst 0 -> site 1
         x[6] = 1.0  # inst 1 -> site 2
 
-        qubo_energy = x @ Q @ x
+        # Slack: s=1 for unused sites, s=0 for used sites
+        s = torch.ones(n)
+        s[1] = 0.0  # site 1 used
+        s[2] = 0.0  # site 2 used
 
-        # QUBO energy = HPWL - lam*m for feasible solutions (no penalties)
+        z = torch.cat([x, s])
+        qubo_energy = z @ Q @ z
+
         D = objectives.get_site_distance_matrix(site_coords)
         FkD = torch.kron(F, D)
         hpwl_only = 0.5 * x @ FkD @ x
-        expected = hpwl_only - lam * m
+        expected = hpwl_only - lam * m - mu * n
 
         assert torch.allclose(qubo_energy, expected, atol=1e-4), \
             f"Feasible energy: {qubo_energy.item():.4f} != expected {expected.item():.4f}"
@@ -395,8 +401,11 @@ class TestExportPlacementQUBO:
         x = torch.zeros(m * n)
         x[2] = 1.0   # inst 0 -> site 2
         x[5] = 1.0   # inst 1 -> site 1
+        s = torch.ones(n)
+        s[2] = 0.0; s[1] = 0.0
+        z = torch.cat([x, s])
 
-        site_indices, coords = objectives.decode_qubo_solution(x, m, n, site_coords)
+        site_indices, coords = objectives.decode_qubo_solution(z, m, n, site_coords)
 
         assert site_indices[0].item() == 2
         assert site_indices[1].item() == 1
@@ -407,15 +416,15 @@ class TestExportPlacementQUBO:
         """Test decode handles non-binary (soft) solutions via argmax."""
         m, n, _, site_coords = small_problem
 
-        x = torch.zeros(m * n)
+        z = torch.zeros(m * n + n)
         # Soft assignment for instance 0: mostly site 0
-        x[0] = 0.8
-        x[1] = 0.2
+        z[0] = 0.8
+        z[1] = 0.2
         # Soft assignment for instance 1: mostly site 3
-        x[6] = 0.1
-        x[7] = 0.9
+        z[6] = 0.1
+        z[7] = 0.9
 
-        site_indices, coords = objectives.decode_qubo_solution(x, m, n, site_coords)
+        site_indices, coords = objectives.decode_qubo_solution(z, m, n, site_coords)
         assert site_indices[0].item() == 0
         assert site_indices[1].item() == 3
 
@@ -431,7 +440,7 @@ class TestExportPlacementQUBO:
             "Upper triangular format should have zeros below diagonal"
 
     def test_qubo_upper_triangular_energy(self, small_problem):
-        """Test that x^T Q_ut x gives the same energy as x^T Q_sym x for binary x."""
+        """Test that z^T Q_ut z gives the same energy as z^T Q_sym z for binary z."""
         m, n, F, site_coords = small_problem
         lam, mu = 2.0, 3.0
         Q_sym, _ = objectives.export_placement_qubo(F, site_coords, lam=lam, mu=mu,
@@ -443,9 +452,12 @@ class TestExportPlacementQUBO:
         x = torch.zeros(m * n)
         x[0] = 1.0
         x[7] = 1.0
+        s = torch.ones(n)
+        s[0] = 0.0; s[3] = 0.0
+        z = torch.cat([x, s])
 
-        energy_sym = x @ Q_sym @ x
-        energy_ut = x @ Q_ut @ x
+        energy_sym = z @ Q_sym @ z
+        energy_ut = z @ Q_ut @ z
         assert torch.allclose(energy_sym, energy_ut, atol=1e-5), \
             f"Energies should match: symmetric={energy_sym.item():.4f} vs ut={energy_ut.item():.4f}"
 
@@ -456,7 +468,7 @@ class TestSolvePlacementSB:
     def test_solve_placement_sb(self):
         """Integration test: solve a small placement problem with SB library.
 
-        With proper at-most-one constraint, instances should not overlap on the same site.
+        With correct ‖Bx+s-1‖² constraint, instances should not overlap.
         """
         sb = pytest.importorskip("simulated_bifurcation")
 
@@ -468,15 +480,14 @@ class TestSolvePlacementSB:
                                      [0.0, 1.0],
                                      [1.0, 1.0]])
 
-        # Use strong weights to enforce constraints
         site_indices, coords, energy, meta = objectives.solve_placement_sb(
-            F, site_coords, lam=100.0, mu=100.0,
+            F, site_coords, lam=10.0, mu=10.0,
             agents=128, max_steps=10000, best_only=True
         )
 
         assert site_indices.shape == (m,), f"Expected shape ({m},), got {site_indices.shape}"
         assert coords.shape == (m, 2), f"Expected shape ({m}, 2), got {coords.shape}"
-        # With proper at-most-one constraint, instances should NOT overlap
+        # With correct at-most-one constraint, instances should NOT overlap
         assert site_indices[0].item() != site_indices[1].item(), \
             f"Instances should NOT overlap! Got indices {site_indices.tolist()}"
 
