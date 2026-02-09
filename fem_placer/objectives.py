@@ -566,6 +566,8 @@ def solve_placement_sb(F, site_coords_matrix, lam=50.0, mu=50.0,
     # to degenerate solutions; ballistic mode fails due to large Ising fields
     sb_kwargs.setdefault('mode', 'discrete')
     sb_kwargs.setdefault('heated', True)
+    if 'device' not in sb_kwargs and torch.cuda.is_available():
+        sb_kwargs['device'] = 'cuda'
 
     z, energy = sb.minimize(Q, domain='binary', agents=agents,
                             max_steps=max_steps, best_only=best_only,
