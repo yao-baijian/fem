@@ -37,6 +37,7 @@ from .objectives import (
     export_placement_qubo,
     decode_qubo_solution,
     solve_placement_sb,
+    solve_placement_cyclic,
 )
 
 # Hypergraph balanced min-cut
@@ -86,6 +87,7 @@ __all__ = [
     'export_placement_qubo',
     'decode_qubo_solution',
     'solve_placement_sb',
+    'solve_placement_cyclic',
 
     # Hypergraph balanced min-cut
     'balance_constrain',

@@ -580,6 +580,386 @@ def solve_placement_sb(F, site_coords_matrix, lam=50.0, mu=50.0,
     return site_indices, coords, energy, meta
 
 
+# =============================================================================
+# CyclicExpansion Placement Solver (arXiv:2312.15467)
+# =============================================================================
+
+def _qap_cost(F, D, perm):
+    """Compute QAP cost: sum_{i<j} F[i,j] * D[perm[i], perm[j]].
+
+    Args:
+        F: Flow matrix [m, m] (symmetric)
+        D: Distance matrix [n, n]
+        perm: Permutation vector [m] mapping instances to sites
+
+    Returns:
+        Scalar cost value
+    """
+    D_sub = D[perm][:, perm]  # [m, m]
+    # Only upper triangle to avoid double-counting
+    m = F.shape[0]
+    mask = torch.triu(torch.ones(m, m, device=F.device, dtype=torch.bool), diagonal=1)
+    return (F[mask] * D_sub[mask]).sum()
+
+
+def _single_swap_delta(F, D, perm, i1, i2):
+    """O(m) cost change from swapping sites of instances i1 and i2.
+
+    Args:
+        F: Flow matrix [m, m]
+        D: Distance matrix [n, n]
+        perm: Current permutation [m]
+        i1, i2: Instance indices to swap
+
+    Returns:
+        Scalar delta (new_cost - old_cost)
+    """
+    m = F.shape[0]
+    a, b = perm[i1].item(), perm[i2].item()
+    delta = 0.0
+    for j in range(m):
+        if j == i1 or j == i2:
+            continue
+        pj = perm[j].item()
+        # F is symmetric, so F[i1,j]+F[j,i1] = 2*F[i1,j], but we sum i<j only
+        # so we use (F[i1,j]-F[i2,j]) directly
+        delta += (F[i1, j] - F[i2, j]) * (D[b, pj] - D[a, pj])
+    return delta
+
+
+def _single_move_delta(F, D, perm, i, j_new):
+    """O(m) cost change from moving instance i to unbound site j_new.
+
+    Args:
+        F: Flow matrix [m, m]
+        D: Distance matrix [n, n]
+        perm: Current permutation [m]
+        i: Instance index to move
+        j_new: New site index
+
+    Returns:
+        Scalar delta (new_cost - old_cost)
+    """
+    m = F.shape[0]
+    a = perm[i].item()
+    delta = 0.0
+    for j in range(m):
+        if j == i:
+            continue
+        pj = perm[j].item()
+        delta += F[i, j] * (D[j_new, pj] - D[a, pj])
+    return delta
+
+
+def _cycle_interaction(F, D, perm, cycle1, cycle2):
+    """O(1) interaction energy between two disjoint 2-cycles.
+
+    For two swap cycles (i1<->i2) and (i3<->i4), computes the
+    additional cost change when both are applied simultaneously
+    vs the sum of individual deltas.
+
+    Args:
+        F: Flow matrix [m, m]
+        D: Distance matrix [n, n]
+        perm: Current permutation [m]
+        cycle1, cycle2: Tuples describing cycles
+
+    Returns:
+        Scalar interaction term
+    """
+    # Extract the instance indices involved in each cycle
+    if cycle1[0] == 'swap':
+        i1, i2 = cycle1[1], cycle1[2]
+        a1_old, a1_new = perm[i1].item(), perm[i2].item()
+        b1_old, b1_new = perm[i2].item(), perm[i1].item()
+        insts1 = [(i1, a1_old, a1_new), (i2, b1_old, b1_new)]
+    else:  # move
+        i1, j_new = cycle1[1], cycle1[2]
+        a1_old = perm[i1].item()
+        insts1 = [(i1, a1_old, j_new)]
+
+    if cycle2[0] == 'swap':
+        i3, i4 = cycle2[1], cycle2[2]
+        a2_old, a2_new = perm[i3].item(), perm[i4].item()
+        b2_old, b2_new = perm[i4].item(), perm[i3].item()
+        insts2 = [(i3, a2_old, a2_new), (i4, b2_old, b2_new)]
+    else:  # move
+        i3, j_new2 = cycle2[1], cycle2[2]
+        a2_old = perm[i3].item()
+        insts2 = [(i3, a2_old, j_new2)]
+
+    # Interaction = sum over (inst_a in cycle1, inst_b in cycle2) of
+    # F[ia,ib] * (D[new_a, new_b] - D[new_a, old_b] - D[old_a, new_b] + D[old_a, old_b])
+    interaction = 0.0
+    for (ia, old_a, new_a) in insts1:
+        for (ib, old_b, new_b) in insts2:
+            interaction += F[ia, ib] * (
+                D[new_a, new_b] - D[new_a, old_b]
+                - D[old_a, new_b] + D[old_a, old_b]
+            )
+    return interaction
+
+
+def _sample_disjoint_cycles(perm, n, k, k_u, rng):
+    """Sample disjoint 2-cycles from instances and unbound sites.
+
+    Args:
+        perm: Current permutation [m]
+        n: Total number of sites
+        k: Number of instances to consider for swaps
+        k_u: Number of unbound sites to consider for moves
+        rng: numpy random Generator
+
+    Returns:
+        List of cycle tuples: ('swap', i1, i2) or ('move', i, j_site)
+    """
+    m = len(perm)
+
+    # Select subset of instances
+    inst_subset = rng.choice(m, size=min(k, m), replace=False)
+    rng.shuffle(inst_subset)
+
+    # Collect unbound sites
+    bound_sites = set(perm.tolist())
+    unbound_sites = [s for s in range(n) if s not in bound_sites]
+
+    # Sample unbound sites
+    if len(unbound_sites) > k_u:
+        ub_indices = rng.choice(len(unbound_sites), size=k_u, replace=False)
+        unbound_sample = [unbound_sites[i] for i in ub_indices]
+    else:
+        unbound_sample = list(unbound_sites)
+
+    cycles = []
+    used_insts = set()
+    used_sites = set()
+
+    # Generate swap cycles from pairs of instances
+    for idx in range(0, len(inst_subset) - 1, 2):
+        i1, i2 = int(inst_subset[idx]), int(inst_subset[idx + 1])
+        if i1 in used_insts or i2 in used_insts:
+            continue
+        cycles.append(('swap', i1, i2))
+        used_insts.add(i1)
+        used_insts.add(i2)
+
+    # Generate move cycles from remaining instances to unbound sites
+    remaining_insts = [int(i) for i in inst_subset if i not in used_insts]
+    for i, j in zip(remaining_insts, unbound_sample):
+        if i in used_insts or j in used_sites:
+            continue
+        cycles.append(('move', i, j))
+        used_insts.add(i)
+        used_sites.add(j)
+
+    return cycles
+
+
+def _build_cyclic_sub_qubo(F, D, perm, cycles):
+    """Build small s x s QUBO from disjoint cycles.
+
+    Q[i,i] = delta_i (single cycle cost change)
+    Q[i,j] = interaction(cycle_i, cycle_j) for i != j
+
+    Args:
+        F: Flow matrix [m, m]
+        D: Distance matrix [n, n]
+        perm: Current permutation [m]
+        cycles: List of cycle tuples
+
+    Returns:
+        Q: QUBO matrix [s, s] as torch tensor
+    """
+    s = len(cycles)
+    Q = torch.zeros(s, s, dtype=F.dtype, device=F.device)
+
+    # Diagonal: single cycle deltas
+    for i, cyc in enumerate(cycles):
+        if cyc[0] == 'swap':
+            Q[i, i] = _single_swap_delta(F, D, perm, cyc[1], cyc[2])
+        else:  # move
+            Q[i, i] = _single_move_delta(F, D, perm, cyc[1], cyc[2])
+
+    # Off-diagonal: pairwise interactions
+    for i in range(s):
+        for j in range(i + 1, s):
+            val = _cycle_interaction(F, D, perm, cycles[i], cycles[j])
+            Q[i, j] = val
+            Q[j, i] = val
+
+    return Q
+
+
+def _apply_cycles(perm, cycles, alpha):
+    """Apply selected cycles to permutation.
+
+    Args:
+        perm: Current permutation [m] (modified in-place)
+        cycles: List of cycle tuples
+        alpha: Binary selection vector [s]
+
+    Returns:
+        perm (modified in-place)
+    """
+    for i, cyc in enumerate(cycles):
+        if alpha[i] == 0:
+            continue
+        if cyc[0] == 'swap':
+            i1, i2 = cyc[1], cyc[2]
+            perm[i1], perm[i2] = perm[i2].clone(), perm[i1].clone()
+        else:  # move
+            inst, site = cyc[1], cyc[2]
+            perm[inst] = site
+    return perm
+
+
+def _solve_sub_qubo_greedy(Q):
+    """Solve small binary QUBO by greedy bit-flip.
+
+    For sub-QUBOs of size s <= 30, try each variable greedily.
+
+    Args:
+        Q: QUBO matrix [s, s]
+
+    Returns:
+        alpha: Binary solution vector [s]
+    """
+    s = Q.shape[0]
+    alpha = torch.zeros(s, dtype=Q.dtype, device=Q.device)
+
+    # Greedy: consider flipping each bit
+    for _ in range(2):  # Two passes for better quality
+        for i in range(s):
+            # Cost of flipping bit i
+            # delta = Q[i,i] + 2 * sum_j(Q[i,j] * alpha[j]) for j != i
+            delta = Q[i, i] + 2.0 * (Q[i, :] * alpha).sum() - 2.0 * Q[i, i] * alpha[i]
+            if alpha[i] == 0 and delta < 0:
+                alpha[i] = 1.0
+            elif alpha[i] == 1 and -delta + Q[i, i] > 0:
+                # Unflip if removing this bit improves cost
+                # Cost of turning off: -(Q[i,i] + 2*sum_{j!=i} Q[i,j]*alpha[j])
+                cost_off = -(Q[i, i] + 2.0 * ((Q[i, :] * alpha).sum() - Q[i, i] * alpha[i]))
+                if cost_off < 0:
+                    alpha[i] = 0.0
+
+    return alpha
+
+
+def solve_placement_cyclic(
+    F, site_coords_matrix,
+    k=60, k_u=30, max_iters=50,
+    init_perm=None, seed=None, verbose=False,
+):
+    """Solve placement using the CyclicExpansion algorithm.
+
+    Iteratively samples small 2-cycle swap sub-problems and solves them
+    to incrementally improve placement. 2-cycles naturally preserve
+    permutation feasibility without one-hot/at-most-one constraints.
+
+    Based on arXiv:2312.15467.
+
+    Args:
+        F: Flow/coupling matrix [m, m] (symmetric)
+        site_coords_matrix: Site coordinates [n, 2]
+        k: Number of instances to consider per iteration for swaps
+        k_u: Number of unbound sites to consider per iteration for moves
+        max_iters: Maximum number of iterations
+        init_perm: Initial permutation [m] (optional, random if None)
+        seed: Random seed for reproducibility
+        verbose: Print progress information
+
+    Returns:
+        site_indices: Best site index for each instance [m]
+        coords: Coordinates for each instance [m, 2]
+        energy: Best QAP cost (scalar)
+        metadata: Dict with 'm', 'n', 'cost_history', 'iterations'
+    """
+    import numpy as np
+
+    m = F.shape[0]
+    n = site_coords_matrix.shape[0]
+    assert m <= n, f"Need m <= n, got m={m}, n={n}"
+
+    device = F.device
+
+    # Compute distance matrix
+    D = get_site_distance_matrix(site_coords_matrix)
+
+    # Make F symmetric with zero diagonal
+    F = (F + F.T) / 2
+    F = F.clone()
+    F.fill_diagonal_(0)
+
+    rng = np.random.default_rng(seed)
+
+    # Initialize permutation
+    if init_perm is not None:
+        perm = init_perm.clone().long()
+    else:
+        perm_np = rng.choice(n, size=m, replace=False)
+        perm = torch.tensor(perm_np, device=device, dtype=torch.long)
+
+    # Compute initial cost
+    best_cost = _qap_cost(F, D, perm).item()
+    best_perm = perm.clone()
+    cost_history = [best_cost]
+
+    patience_counter = 0
+    patience = 5
+
+    for it in range(max_iters):
+        # Sample disjoint cycles
+        cycles = _sample_disjoint_cycles(perm, n, k, k_u, rng)
+
+        if len(cycles) == 0:
+            if verbose:
+                print(f"  iter {it}: no cycles sampled, skipping")
+            continue
+
+        # Build sub-QUBO
+        Q_sub = _build_cyclic_sub_qubo(F, D, perm, cycles)
+
+        # Solve sub-QUBO
+        alpha = _solve_sub_qubo_greedy(Q_sub)
+
+        # Apply selected cycles
+        if alpha.sum() > 0:
+            perm = _apply_cycles(perm, cycles, alpha)
+
+        # Compute new cost
+        current_cost = _qap_cost(F, D, perm).item()
+        cost_history.append(current_cost)
+
+        if current_cost < best_cost - 1e-10:
+            best_cost = current_cost
+            best_perm = perm.clone()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if verbose:
+            n_applied = int(alpha.sum().item())
+            print(f"  iter {it}: cost={current_cost:.4f}, best={best_cost:.4f}, "
+                  f"cycles={len(cycles)}, applied={n_applied}")
+
+        if patience_counter >= patience:
+            if verbose:
+                print(f"  Early stop at iter {it} (patience={patience})")
+            break
+
+    # Return best solution
+    site_indices = best_perm
+    coords = site_coords_matrix[site_indices]
+    metadata = {
+        'm': m, 'n': n,
+        'site_coords': site_coords_matrix,
+        'cost_history': cost_history,
+        'iterations': len(cost_history) - 1,
+    }
+
+    return site_indices, coords, best_cost, metadata
+
+
 def infer_placements(J, p, area_width, site_coords_matrix):
     """
     Infer final placements from probability distribution.
