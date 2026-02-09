@@ -1,10 +1,11 @@
 """
-Test script for xw/refactor branch FPGA placement using Simulated Bifurcation.
+Test script for xw/refactor branch FPGA placement using CyclicExpansion.
 
 This script solves the same placement problem as test_refactor_branch_qubo.py
-but uses the simulated-bifurcation library instead of the FEM optimizer.
+but uses the CyclicExpansion algorithm (arXiv:2312.15467) which iteratively
+solves small 2-cycle swap sub-problems instead of one large QUBO.
 
-Uses strong constraint weights to enforce feasibility on the combinatorial solver.
+2-cycles naturally preserve permutation feasibility — no constraint weights needed.
 """
 
 import sys
@@ -16,20 +17,21 @@ from fem_placer import (
     Legalizer,
     Router,
     PlacementDrawer,
-    solve_placement_sb,
+    solve_placement_cyclic,
 )
 from fem_placer.utils import parse_fpga_design
 
 # Configuration
-agents = 128
-max_steps = 200000
+max_iters = 200
+k = 60          # instances per iteration
+k_u = 30        # unbound sites per iteration
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 dcp_file = './vivado/output_dir/post_impl.dcp'
-output_file = 'optimized_placement_sb.dcp'
+output_file = 'optimized_placement_cyclic.dcp'
 
 # Initialize FPGA placer
 print("=" * 80)
-print("Testing xw/refactor Branch FPGA Placement (SB Solver)")
+print("Testing xw/refactor Branch FPGA Placement (CyclicExpansion)")
 print("=" * 80)
 
 print("\nINFO: Initializing FPGA placer...")
@@ -63,33 +65,24 @@ logic_site_coords = torch.cartesian_prod(
 )
 print(f"INFO: Site coordinates matrix shape: {logic_site_coords.shape}")
 
-# QUBO matrix size
-N = num_inst * logic_site_coords.shape[0] + logic_site_coords.shape[0]
-qubo_memory_mb = N * N * 4 / 1024 / 1024
-print(f"\nMemory usage:")
-print(f"  QUBO matrix ({N} x {N}): ~{qubo_memory_mb:.2f} MB")
+print(f"\nINFO: CyclicExpansion params: k={k}, k_u={k_u}, max_iters={max_iters}")
 
-# Constraint weights — strong enough to enforce feasibility
-lam = 50.0
-mu = 50.0
-print(f"\nINFO: Constraint weights: lam={lam}, mu={mu}")
-print(f"INFO: SB agents: {agents}, max_steps: {max_steps}, device: {dev}")
-
-# Solve with SB (heated dSB, auto GPU if available)
-print("\nINFO: Solving placement QUBO with Simulated Bifurcation...")
-site_indices, grid_coords, energy, meta = solve_placement_sb(
-    J, logic_site_coords, lam=lam, mu=mu,
-    agents=agents, max_steps=max_steps, best_only=True,
-    device=dev,
+# Solve with CyclicExpansion
+print("\nINFO: Solving placement with CyclicExpansion...")
+site_indices, grid_coords, energy, meta = solve_placement_cyclic(
+    J, logic_site_coords,
+    k=k, k_u=k_u, max_iters=max_iters,
+    seed=42, verbose=True,
 )
 
-# Check feasibility
+# Check feasibility (CyclicExpansion guarantees unique sites by construction)
 n_unique = len(torch.unique(site_indices))
 print(f"\nINFO: Unique sites used: {n_unique} / {num_inst} instances")
 if n_unique < num_inst:
     print(f"WARNING: Only {n_unique} distinct sites — {num_inst - n_unique} instances overlap")
 
-print(f"\nINFO: SB energy: {energy}")
+print(f"\nINFO: QAP cost: {energy:.4f}")
+print(f"INFO: Iterations: {meta['iterations']}")
 print(f"INFO: Grid coordinates shape: {grid_coords.shape}")
 
 # Convert to real FPGA coordinates
@@ -97,8 +90,8 @@ print("INFO: Converting to real FPGA coordinates...")
 logic_grid = fpga_placer.get_grid('logic')
 coords = logic_grid.to_real_coords_tensor(grid_coords)
 print(f"INFO: Real coordinates shape: {coords.shape}")
-print(f"DEBUG SB: First 10 real coords: {coords[:10]}")
-print(f"DEBUG SB: Min/Max coords: ({coords.min(dim=0).values}, {coords.max(dim=0).values})")
+print(f"DEBUG: First 10 real coords: {coords[:10]}")
+print(f"DEBUG: Min/Max coords: ({coords.min(dim=0).values}, {coords.max(dim=0).values})")
 
 # Set up visualization
 drawer = PlacementDrawer(placer=fpga_placer, num_subplots=5, debug_mode=False)
@@ -132,14 +125,15 @@ drawer.draw_place_and_route(
     io_coords=None,
     include_io=False,
     iteration=0,
-    title_suffix='xw/refactor Branch - SB Solver - Final'
+    title_suffix='xw/refactor Branch - CyclicExpansion - Final'
 )
 
 print("\n" + "=" * 80)
-print("xw/refactor Branch FPGA Placement Test (SB Solver) Complete!")
+print("xw/refactor Branch FPGA Placement Test (CyclicExpansion) Complete!")
 print("=" * 80)
 print(f"\nFinal Results:")
-print(f"  - SB energy: {energy}")
+print(f"  - QAP cost: {energy:.4f}")
+print(f"  - Iterations: {meta['iterations']}")
 print(f"  - HPWL before legalization: {hpwl_before}")
 print(f"  - HPWL after legalization: {hpwl_after}")
 print(f"  - Overlaps resolved: {overlap}")
