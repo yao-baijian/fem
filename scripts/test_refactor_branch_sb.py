@@ -69,17 +69,18 @@ qubo_memory_mb = N * N * 4 / 1024 / 1024
 print(f"\nMemory usage:")
 print(f"  QUBO matrix ({N} x {N}): ~{qubo_memory_mb:.2f} MB")
 
-# Constraint weights matching FEM optimizer (alpha = num_inst / 2)
-lam = num_inst / 2.0
-mu = num_inst / 2.0
+# Constraint weights — strong enough to enforce feasibility
+lam = 50.0
+mu = 50.0
 print(f"\nINFO: Constraint weights: lam={lam}, mu={mu}")
-print(f"INFO: SB agents: {agents}, max_steps: {max_steps}")
+print(f"INFO: SB agents: {agents}, max_steps: {max_steps}, device: {dev}")
 
-# Solve with SB
+# Solve with SB (heated dSB, auto GPU if available)
 print("\nINFO: Solving placement QUBO with Simulated Bifurcation...")
 site_indices, grid_coords, energy, meta = solve_placement_sb(
     J, logic_site_coords, lam=lam, mu=mu,
-    agents=agents, max_steps=max_steps, best_only=True
+    agents=agents, max_steps=max_steps, best_only=True,
+    device=dev,
 )
 
 # Check feasibility
