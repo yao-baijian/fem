@@ -18,7 +18,7 @@ COMMAND=${1:-build}
 case $COMMAND in
     build)
         echo -e "${YELLOW}Building documentation...${NC}"
-        mkdocs build --clean --strict
+        uv run python -m mkdocs build --clean --strict
         echo -e "${GREEN}✓ Built successfully → site/${NC}"
         ;;
 
@@ -26,18 +26,18 @@ case $COMMAND in
         echo -e "${YELLOW}Starting local server...${NC}"
         echo -e "Docs at: ${GREEN}http://127.0.0.1:8000${NC}"
         echo -e "Press ${YELLOW}Ctrl+C${NC} to stop\n"
-        mkdocs serve
+        uv run python -m mkdocs serve
         ;;
 
     deploy)
         echo -e "${YELLOW}Deploying to GitHub Pages...${NC}"
-        mkdocs gh-deploy --clean --force
+        uv run python -m mkdocs gh-deploy --clean --force
         echo -e "${GREEN}✓ Deployed to GitHub Pages${NC}"
         ;;
 
     check)
         echo -e "${YELLOW}Checking documentation...${NC}"
-        mkdocs build --strict && echo -e "${GREEN}✓ No errors${NC}" || echo -e "${RED}✗ Has errors${NC}"
+        uv run python -m mkdocs build --strict && echo -e "${GREEN}✓ No errors${NC}" || echo -e "${RED}✗ Has errors${NC}"
         ;;
 
     clean)
@@ -47,8 +47,8 @@ case $COMMAND in
         ;;
 
     install)
-        echo -e "${YELLOW}Installing dependencies with uv...${NC}"
-        uv pip install ".[docs]"
+        echo -e "${YELLOW}Installing dependencies...${NC}"
+        uv run python -m pip install ".[docs]"
         echo -e "${GREEN}✓ Installed${NC}"
         ;;
 

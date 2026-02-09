@@ -447,14 +447,14 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     Export the full QUBO matrix with slack variables for SB solver.
 
     Constructs a single Q matrix encoding:
-        argmin_{x,s} ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx + s - 1‖²
+        argmin_{x,s} ½ x^T (F⊗D) x + λ‖Ax - 1‖² + μ‖Bx - s‖²
 
     where x ∈ {0,1}^{mn} are placement variables,
-          s ∈ {0,1}^n are slack variables (s_j=1 means site j is unused).
+          s ∈ {0,1}^n are slack variables (s_j=1 means site j is used).
 
     The at-most-one constraint uses equality form with slack:
-        Σ_i x_{i,s} + s_s = 1  for each site s
-    This forces: site unused (s=1) or used by exactly one instance (s=0).
+        Σ_i x_{i,s} = s_s  for each site s
+    This forces: site unused (s=0) or used by exactly one instance (s=1).
 
     Args:
         F: Coupling matrix [m, m] (flow/connectivity between instances)
@@ -477,7 +477,7 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     # --- Q_xx block [mn × mn] ---
     # From HPWL: ½(F⊗D)
     # From one-hot  λ‖Ax-1‖²: λ(I_m⊗J_n) - 2λ·I_{mn}  (drops constant λ·m)
-    # From at-most-one μ‖Bx+s-1‖²: μ(J_m⊗I_n) - 2μ·I_{mn}
+    # From at-most-one μ‖Bx-s‖²: μ(J_m⊗I_n)  (no linear term on x)
     ones_n = torch.ones(n, n, device=device, dtype=dtype)
     ones_m = torch.ones(m, m, device=device, dtype=dtype)
     I_n = torch.eye(n, device=device, dtype=dtype)
@@ -487,17 +487,17 @@ def export_placement_qubo(F, site_coords_matrix, lam, mu, format='symmetric'):
     Q_xx = (0.5 * torch.kron(F, D)
             + lam * torch.kron(I_m, ones_n)
             + mu * torch.kron(ones_m, I_n)
-            - 2 * (lam + mu) * I_mn)
+            - 2 * lam * I_mn)
 
     # --- Q_xs block [mn × n] ---
-    # From μ‖Bx+s-1‖²: cross term 2μ x^T B^T s → symmetric Q_xs = μ·B^T
+    # From μ‖Bx-s‖²: cross term -2μ x^T B^T s → symmetric Q_xs = -μ·B^T
     # B = 1_m^T ⊗ I_n,  B^T = 1_m ⊗ I_n  ∈ R^{mn×n}
     B_T = torch.kron(torch.ones(m, 1, device=device, dtype=dtype), I_n)
-    Q_xs = mu * B_T
+    Q_xs = -mu * B_T
 
     # --- Q_ss block [n × n] ---
-    # From μ‖Bx+s-1‖²: s^T s - 2·1^T s → (for binary s: s²=s) → -μ·I_n
-    Q_ss = -mu * I_n
+    # From μ‖Bx-s‖²: s^T s → (for binary s: s²=s) → +μ·I_n
+    Q_ss = mu * I_n
 
     # Assemble full Q
     Q_top = torch.cat([Q_xx, Q_xs], dim=1)
@@ -531,19 +531,20 @@ def decode_qubo_solution(z, m, n, site_coords_matrix):
     return site_indices, coords
 
 
-def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
+def solve_placement_sb(F, site_coords_matrix, lam=50.0, mu=50.0,
                        agents=128, max_steps=10000, best_only=True, **sb_kwargs):
     """
     Solve placement QUBO using the simulated-bifurcation library.
 
-    Uses discrete SB mode (dSB) which works well for placement QUBOs.
-    The ballistic mode fails on these problems due to large Ising external fields.
+    Uses heated discrete SB mode (dSB) which works well for placement QUBOs.
+    Heated mode adds annealing to help escape local optima where instances
+    collapse to the same site.
 
     Args:
         F: Coupling matrix [m, m] (flow/connectivity between instances)
         site_coords_matrix: Site coordinates [n, 2]
-        lam: Weight for one-hot constraint
-        mu: Weight for at-most-one constraint
+        lam: Weight for one-hot constraint (each instance picks exactly one site)
+        mu: Weight for at-most-one constraint (each site used at most once)
         agents: Number of SB agents (parallel runs)
         max_steps: Maximum SB iterations
         best_only: If True, return only the best solution
@@ -561,8 +562,10 @@ def solve_placement_sb(F, site_coords_matrix, lam=10.0, mu=10.0,
                                     format='symmetric')
     m, n = meta['m'], meta['n']
 
-    # Use discrete mode (dSB) - ballistic mode fails on placement QUBOs
+    # Use heated discrete mode - heated adds annealing to avoid collapsing
+    # to degenerate solutions; ballistic mode fails due to large Ising fields
     sb_kwargs.setdefault('mode', 'discrete')
+    sb_kwargs.setdefault('heated', True)
 
     z, energy = sb.minimize(Q, domain='binary', agents=agents,
                             max_steps=max_steps, best_only=best_only,

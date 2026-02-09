@@ -307,10 +307,10 @@ class TestExportPlacementQUBO:
         x[0] = 1.0   # instance 0 picks site 0
         x[7] = 1.0   # instance 1 picks site 3
 
-        # Slack: s_j=1 if site j unused, s_j=0 if used
-        s = torch.ones(n)
-        s[0] = 0.0  # site 0 used
-        s[3] = 0.0  # site 3 used
+        # Slack: s_j=1 if site j used, s_j=0 if unused
+        s = torch.zeros(n)
+        s[0] = 1.0  # site 0 used
+        s[3] = 1.0  # site 3 used
 
         z = torch.cat([x, s])
         qubo_energy = z @ Q @ z
@@ -325,10 +325,10 @@ class TestExportPlacementQUBO:
         onehot_penalty = lam * ((row_sums - 1) ** 2).sum()
 
         col_sums = x_mat.sum(dim=0)
-        atmost_penalty = mu * ((col_sums + s - 1) ** 2).sum()
+        atmost_penalty = mu * ((col_sums - s) ** 2).sum()
 
-        # Q drops constants: λ·m from one-hot, μ·n from at-most-one
-        constant_offset = lam * m + mu * n
+        # Q drops constant: λ·m from one-hot (no constant from at-most-one)
+        constant_offset = lam * m
         expected_energy = hpwl_term + onehot_penalty + atmost_penalty - constant_offset
         assert torch.allclose(qubo_energy, expected_energy, atol=1e-4), \
             f"QUBO energy {qubo_energy.item():.4f} != expected {expected_energy.item():.4f}"
@@ -337,7 +337,7 @@ class TestExportPlacementQUBO:
         """Test that feasible solutions (distinct sites, correct slack) have zero penalty.
 
         For feasible solution: one-hot=0, at-most-one=0.
-        QUBO energy = HPWL - λ·m - μ·n (dropped constants).
+        QUBO energy = HPWL - λ·m (dropped constant from one-hot).
         """
         m, n, F, site_coords = small_problem
         lam, mu = 10.0, 10.0
@@ -348,10 +348,10 @@ class TestExportPlacementQUBO:
         x[1] = 1.0  # inst 0 -> site 1
         x[6] = 1.0  # inst 1 -> site 2
 
-        # Slack: s=1 for unused sites, s=0 for used sites
-        s = torch.ones(n)
-        s[1] = 0.0  # site 1 used
-        s[2] = 0.0  # site 2 used
+        # Slack: s=1 for used sites, s=0 for unused sites
+        s = torch.zeros(n)
+        s[1] = 1.0  # site 1 used
+        s[2] = 1.0  # site 2 used
 
         z = torch.cat([x, s])
         qubo_energy = z @ Q @ z
@@ -359,7 +359,7 @@ class TestExportPlacementQUBO:
         D = objectives.get_site_distance_matrix(site_coords)
         FkD = torch.kron(F, D)
         hpwl_only = 0.5 * x @ FkD @ x
-        expected = hpwl_only - lam * m - mu * n
+        expected = hpwl_only - lam * m
 
         assert torch.allclose(qubo_energy, expected, atol=1e-4), \
             f"Feasible energy: {qubo_energy.item():.4f} != expected {expected.item():.4f}"
