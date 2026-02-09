@@ -22,7 +22,7 @@ from fem_placer.utils import parse_fpga_design
 
 # Configuration
 agents = 128
-max_steps = 10000
+max_steps = 200000
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 dcp_file = './vivado/output_dir/post_impl.dcp'
 output_file = 'optimized_placement_sb.dcp'

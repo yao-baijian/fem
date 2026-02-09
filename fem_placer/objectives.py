@@ -573,6 +573,7 @@ def solve_placement_sb(F, site_coords_matrix, lam=50.0, mu=50.0,
                             max_steps=max_steps, best_only=best_only,
                             **sb_kwargs)
     z_tensor = z if isinstance(z, torch.Tensor) else torch.tensor(z, dtype=Q.dtype)
+    z_tensor = z_tensor.cpu()
 
     site_indices, coords = decode_qubo_solution(z_tensor.float(), m, n,
                                                 meta['site_coords'])
