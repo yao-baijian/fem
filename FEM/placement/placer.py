@@ -426,11 +426,11 @@ class FpgaPlacer:
         place_length = self.grids['logic'].area_length
         place_width = self.grids['logic'].area_width
         
-        self.logic_site_coords = torch.cartesian_prod(
+        self.logic_site_coords = self.grids['logic'].to_real_coords_tensor(torch.cartesian_prod(
             torch.arange(place_width, dtype=torch.float32, device=self.device),
             torch.arange(place_length, dtype=torch.float32, device=self.device)
-        )
-    
+        ))
+
     # def get_site_coords_all(num_locations, area_width):
     #     indices = torch.arange(num_locations, dtype=torch.float32, device='cuda')
     #     x_coords = indices % area_width
@@ -438,10 +438,10 @@ class FpgaPlacer:
     #     return torch.stack([x_coords, y_coords], dim=1)
 
     def _get_io_area_coords(self):
-        self.io_site_coords = torch.cartesian_prod(
+        self.io_site_coords = self.grids['io'].to_real_coords_tensor(torch.cartesian_prod(
             torch.tensor([0], dtype=torch.float32, device=self.device),
             torch.arange(self.fixed_insts_num, dtype=torch.float32, device=self.device) 
-        )
+        ))
         
     def _get_combined_coords(self):
         logic_coords = self.logic_site_coords.clone()

@@ -110,20 +110,16 @@ class Legalizer:
                                  include_io: bool) -> Tuple[bool, int]:
         conflict_x, conflict_y = conflict_pos
         
-        # 搜索空位置
-        empty_positions = []
-        for radius in range(1, 5):
-            radius_empty = grid.find_empty_positions_in_radius(conflict_x, conflict_y, radius)
-            empty_positions.extend([(x, y, dist) for x, y, dist in radius_empty])
-            
-            if len(empty_positions) >= len(conflict_instances) + 2:
-                break
+        needed_positions = len(conflict_instances) + 1
+        empty_positions = grid.find_empty_positions_nearby(conflict_x, conflict_y, needed_positions)
+
+        if len(empty_positions) < needed_positions - 1:
+            ERROR(f"Grid '{grid.name}' has no empty place")
+            return False, 0
         
         empty_positions.insert(0, (conflict_x, conflict_y, 0))
-        
         m = len(conflict_instances)
-        n = min(len(empty_positions), m + 5)
-
+        n = min(len(empty_positions), m + 3)
         cost_matrix = torch.zeros((m, n), device=self.device)
         
         for i, instance_id in enumerate(conflict_instances):

@@ -5,7 +5,6 @@ from typing import Dict, Any, Optional
 MODULE_DIR = os.path.dirname(__file__)
 CSV_PATH = os.path.join(MODULE_DIR, "ml_data.csv")
 FIELDNAMES = [
-    "instance",
     "opti_insts_num", "avail_sites_num", "fixed_insts_num", "utilization",
     "logic_area_length", "logic_area_width", "io_height", "net_count",
     "hpwl_before", "hpwl_after", "overlap_after", "alpha"
@@ -18,7 +17,6 @@ def extract_features_from_placer(placer, logic_coords=None, io_coords=None, hpwl
     utilization = placer.opti_insts_num / (logic_grid.area_length * logic_grid.area_width)
 
     row = {
-        "instance": instance,
         "opti_insts_num": int(placer.opti_insts_num),
         "avail_sites_num": int(placer.avail_sites_num),
         "fixed_insts_num": int(placer.fixed_insts_num),

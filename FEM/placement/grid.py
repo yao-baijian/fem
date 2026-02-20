@@ -1,5 +1,6 @@
 import torch
 import heapq
+import bisect
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass, field
 from .logger import INFO, WARNING, ERROR
@@ -15,15 +16,7 @@ class Grid:
     
     _grid: List[List[List[int]]] = field(default_factory=list)
     _instance_positions: Dict[int, Tuple[int, int]] = field(default_factory=dict)
-    _empty_positions: List[Tuple[int, int]] = field(default_factory=list)
-    
-    def __post_init__(self):
-        self._grid = [[[] for _ in range(self.area_width)] for _ in range(self.area_length)]
-        # self._empty_positions.clear()
-        # for x in range(self.start_x, self.end_x + 1):
-        #     for y in range(self.start_y, self.end_y + 1):
-        #         if self.is_position_empty(x, y):
-        #             self._empty_positions.append((x, y))
+    _empty_positions: List[Tuple[int, int]] = field(default_factory=list) 
     
     @property
     def end_x(self) -> int:
@@ -53,26 +46,65 @@ class Grid:
     def area(self) -> int:
         return self.area_length * self.area_width
 
-    def get_empty_from_queue(self, count=1, exclude_positions=None) -> List[Tuple[int, int]]:
-        if exclude_positions is None:
-            exclude_positions = []
-        
+    def __post_init__(self):
+        self._grid = [[[] for _ in range(self.area_width)] for _ in range(self.area_length)]
+        for x in range(self.start_x, self.end_x + 1):
+            for y in range(self.start_y, self.end_y + 1):
+                if self.is_position_empty(x, y):
+                    self._empty_positions.append((x, y))
+        self._empty_positions.sort()
+
+    def _position_to_key(self, x: int, y: int) -> int:
+        return x * 10000 + y  # 假设y不会超过10000
+
+    def find_empty_positions_nearby(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
         result = []
-        for pos in self._empty_positions:
-            x, y = pos
-            if pos in exclude_positions:
-                continue
-            if self.is_position_empty(x, y):
-                result.append(pos)
-                if len(result) >= count:
-                    break
+        target_key = self._position_to_key(start_x, start_y)
+        pos = bisect.bisect_left(self._empty_positions, (start_x, start_y))
+        left = pos - 1
+        right = pos
+        
+        while len(result) < needed_count and (left >= 0 or right < len(self._empty_positions)):
+            left_dist = float('inf')
+            right_dist = float('inf')
+            
+            if left >= 0:
+                left_x, left_y = self._empty_positions[left]
+                left_dist = abs(left_x - start_x) + abs(left_y - start_y)
+
+            if right < len(self._empty_positions):
+                right_x, right_y = self._empty_positions[right]
+                right_dist = abs(right_x - start_x) + abs(right_y - start_y)
+            
+            if left_dist <= right_dist:
+                x, y = self._empty_positions[left]
+                if (x, y) != (start_x, start_y):  # 排除当前位置
+                    result.append((x, y, left_dist))
+                left -= 1
+            else:
+                x, y = self._empty_positions[right]
+                if (x, y) != (start_x, start_y):  # 排除当前位置
+                    result.append((x, y, right_dist))
+                right += 1
         
         return result
+    
+    def update_empty_on_place(self, x: int, y: int):
+        pos = (x, y)
+        if pos in self._empty_positions:
+            idx = bisect.bisect_left(self._empty_positions, pos)
+            if idx < len(self._empty_positions) and self._empty_positions[idx] == pos:
+                del self._empty_positions[idx]
+    
+    def update_empty_on_remove(self, x: int, y: int):
+        if self.is_position_empty(x, y):
+            pos = (x, y)
+            if pos not in self._empty_positions:
+                bisect.insort(self._empty_positions, pos)
 
-
-    def to_grid_coords(self, x: int, y: int) -> Tuple[int, int]:
-        grid_x = x - self.start_x
-        grid_y = y - self.start_y
+    def to_grid_coords(self, real_x: int, real_y: int) -> Tuple[int, int]:
+        grid_x = real_x - self.start_x
+        grid_y = real_y - self.start_y
         return grid_x, grid_y
     
     def to_real_coords(self, grid_x: int, grid_y: int) -> Tuple[int, int]:
@@ -96,6 +128,7 @@ class Grid:
         
         self._grid[grid_x][grid_y].append(instance_id)
         self._instance_positions[instance_id] = (x, y)
+        self.update_empty_on_place(x, y)
         return True
     
     def move_instance(self, instance_id: int, new_x: int, new_y: int, 
@@ -129,6 +162,16 @@ class Grid:
         
         return False, None, (old_x, old_y)
     
+    def remove_instance(self, instance_id: int):
+        if instance_id in self._instance_positions:
+            x, y = self._instance_positions[instance_id]
+            grid_x, grid_y = self.to_grid_coords(x, y)
+
+            if instance_id in self._grid[grid_x][grid_y]:
+                self._grid[grid_x][grid_y].remove(instance_id)
+                del self._instance_positions[instance_id]
+                self.update_empty_on_remove(x, y)
+            
     def find_nearest_empty(self, x: int, y: int, max_radius=10, k=5) -> List[Tuple[int, int, int]]:
         heap = []
         visited = set()
@@ -209,17 +252,6 @@ class Grid:
         self._grid = [[[] for _ in range(self.area_width)] 
                      for _ in range(self.area_length)]
         self._instance_positions.clear()
-    
-    def remove_instance(self, instance_id: int):
-        if instance_id in self._instance_positions:
-            x, y = self._instance_positions[instance_id]
-            grid_x, grid_y = self.to_grid_coords(x, y)
-            
-            if 0 <= grid_x < self.area_length and 0 <= grid_y < self.area_width:
-                if instance_id in self._grid[grid_x][grid_y]:
-                    self._grid[grid_x][grid_y].remove(instance_id)
-            
-            del self._instance_positions[instance_id]
     
     def to_coords_tensor(self, num_instances: int, dtype=torch.float32) -> torch.Tensor:
         coords = torch.zeros((num_instances, 2), dtype=dtype, device=self.device)
