@@ -56,9 +56,12 @@ for instance in instances:
     optimizer = FPGAPlacementOptimizer(
         num_inst=fpga_placer.opti_insts_num,
         num_fixed_inst=fpga_placer.fixed_insts_num,
-        num_site=fpga_placer.avail_sites_num,
+        num_site=fpga_placer.get_grid('logic').area,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,
+        io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
+        io_site_coords=fpga_placer.io_site_coords,
+        bbox_length = fpga_placer.grids['logic'].area_length,
         constraint_weight=1.0,
         num_trials=num_trials,
         num_steps=num_steps,
@@ -75,7 +78,7 @@ for instance in instances:
         manual_grad=manual_grad
     )
     
-    config, result = optimizer.optimize(area_width=area_length)
+    config, result = optimizer.optimize()
     
     optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
 

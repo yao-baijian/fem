@@ -38,20 +38,6 @@ from .objectives import (
     decode_qubo_solution,
 )
 
-# Hypergraph balanced min-cut
-from .hyper_bmincut import (
-    balance_constrain,
-    balance_constrain_softplus,
-    balance_constrain_relu,
-    infer_hyperbmincut,
-    expected_hyperbmincut,
-    expected_hyperbmincut_expected_nodes_temped,
-    expected_hyperbmincut_max_expected_nodes,
-    expected_hyperbmincut_all_comb,
-    expected_hyperbmincut_expected_crossing_simplified,
-    manual_grad_hyperbmincut,
-)
-
 __all__ = [
     # Core classes
     'FpgaPlacer',

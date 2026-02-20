@@ -33,6 +33,7 @@ class FPGAPlacementOptimizer:
             num_inst: int,
             num_fixed_inst: int,
             num_site: int,
+            bbox_length: int,
             coupling_matrix: torch.Tensor,
             site_coords_matrix: torch.Tensor,
             io_site_connect_matrix: torch.Tensor = None,
@@ -71,19 +72,14 @@ class FPGAPlacementOptimizer:
         self.site_coords_matrix = site_coords_matrix
         self.io_site_connect_matrix = io_site_connect_matrix
         self.io_site_coords = io_site_coords
-        
-        # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor      # Net to slice sites mapping tensor
-        # self.io_site_connect_matrix = self.fpga_wrapper.net_manager.io_insts_matrix
-        # self.site_coords = self.fpga_wrapper.logic_site_coords
-        # self.io_site_coords = self.fpga_wrapper.io_site_coords
-        # self.bbox_length = self.fpga_wrapper.grids['logic'].area_length
-        # self.constraint_weight = self.fpga_wrapper.constraint_weight
-        
+        # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor 
+        self.bbox_length = bbox_length    
         self.constraint_weight = constraint_weight
         
         self.num_trials = num_trials
         self.num_steps = num_steps
         self.dev = dev
+        self.dtype = dtype
 
         if anneal == 'lin':
             betas = torch.linspace(betamin, betamax, num_steps)
@@ -97,7 +93,6 @@ class FPGAPlacementOptimizer:
         self.learning_rate = learning_rate
         self.h_factor = h_factor
         self.seed = seed
-        self.dtype = dtype
         self.with_io = with_io
         self.manual_grad = manual_grad
 
@@ -146,7 +141,7 @@ class FPGAPlacementOptimizer:
 
     def iterate_placement(self, area_width):
         h = self._initialize()
-        opt = self._setup_optimizer([h], self.optimizer, self.learning_rate)
+        opt = self._setup_optimizer([h])
 
         for step in range(self.num_steps):
             p = torch.softmax(h, dim=2)
@@ -165,7 +160,7 @@ class FPGAPlacementOptimizer:
     
     def iterate_placement_with_io(self):
         h_logic, h_io = self._initialize()
-        opt = self._setup_optimizer([h_logic, h_io], self.optimizer, self.learning_rate)
+        opt = self._setup_optimizer([h_logic, h_io])
 
         for step in range(self.num_steps):
             p_logic = torch.softmax(h_logic, dim=2)
@@ -173,7 +168,7 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement_with_io(
-                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_weight)
+                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_weight, 0)
 
             free_energy = loss - (entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step]
             free_energy.backward(gradient=torch.ones_like(free_energy))
@@ -181,13 +176,13 @@ class FPGAPlacementOptimizer:
 
         return p_logic, p_io
 
-    def optimize(self, area_width) -> Tuple[torch.Tensor, torch.Tensor]:
+    def optimize(self) -> Tuple[torch.Tensor, torch.Tensor]:
 
         if self.with_io:
             p = self.iterate_placement_with_io()
-            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords, self.io_site_coords)
+            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords_matrix, self.io_site_coords)
             return config, result
         else:
-            p = self.iterate_placement(area_width)
-            config, result = infer_placements(self.coupling_matrix, p, area_width, self.site_coords_matrix)
+            p = self.iterate_placement(self.bbox_length)
+            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
             return config, result

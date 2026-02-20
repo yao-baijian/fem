@@ -1,16 +1,16 @@
 import sys
 sys.path.append('.')
-from utils import *
+import numpy as np
 import random
 import io
 import sys
 import torch
 import rapidwright
 from contextlib import contextmanager
-from .net import NetManager
-from .grid import Grid
-from .config import *
-from .logger import INFO, WARNING, ERROR
+from fem_placer.net import NetManager
+from fem_placer.grid import Grid
+from fem_placer.config import *
+from fem_placer.logger import INFO, WARNING, ERROR
 
 from com.xilinx.rapidwright.design import Design
 from com.xilinx.rapidwright.device import Device, Site, SiteTypeEnum
