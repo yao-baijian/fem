@@ -417,7 +417,7 @@ def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
     return current_hpwl + alpha * constrain_loss
 
 
-def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords):
+def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords, alpha, beta):
     """
     Calculate expected placement loss including IO connections.
 
@@ -432,10 +432,9 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
     Returns:
         total_loss: Combined loss [batch_size]
     """
-    hpwl_weight, constrain_weight = 1, 20
     current_hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords)
     constrain_loss = get_constraints_loss_with_io(p_logic, p_io)
-    return hpwl_weight * current_hpwl + constrain_weight * constrain_loss
+    return current_hpwl + alpha * constrain_loss
 
 
 # =============================================================================
@@ -532,7 +531,6 @@ def infer_placements(J, p, area_width, site_coords_matrix):
         inst_coords: Instance coordinates [batch_size, num_instances, 2]
         hpwl: HPWL values [batch_size]
     """
-    # IMPORTANT: Must match master's implementation exactly
     inst_indices = torch.argmax(p, dim=2)
     inst_coords = get_inst_coords_from_index(inst_indices, area_width)
     result = get_hpwl_loss_qubo(J, p, site_coords_matrix)

@@ -5,17 +5,7 @@ This script tests the FPGAPlacementOptimizer on a real FPGA design.
 """
 
 import sys
-sys.path.append('.')
-from FEM import FEM
-from FEM.placement.placer import FpgaPlacer
-from FEM.placement.drawer import PlacementDrawer
-from FEM.placement.legalizer import Legalizer
-from FEM.placement.router import Router
-from FEM.placement.logger import *
-from FEM.placement.config import *
-from FEM.ml_alpha.dataset import *
-from FEM.ml_alpha.predict import predict_alpha
-# sys.path.insert(0, '.')
+sys.path.insert(0, '.')
 
 import torch
 from fem_placer import (
@@ -25,22 +15,25 @@ from fem_placer import (
     Router,
     FPGAPlacementOptimizer
 )
-from fem_placer.utils import parse_fpga_design
+from fem_placer.logger import *
+from fem_placer.config import *
+from ml_alpha.dataset import *
+from ml_alpha.predict import predict_alpha
 
+SET_LEVEL('INFO')
 
 instances = ['c5315']
             # , 'c1355', 'c2670', 'c5315', 'c6288', 'c7552'
             #  's713', 's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
-SET_LEVEL('INFO')
-# # Configuration
-# num_trials = 10
-# num_steps = 2000
-# dev = 'cpu'
-
-# Initialize FPGA placer
-print("=" * 80)
-print("Testing FPGA Placement Optimizer on Real FPGA Design")
-print("=" * 80)
+draw_evolution = False
+draw_loss_function = False
+draw_final_placement = False
+num_trials = 10
+num_steps = 2000
+dev = 'cuda'
+manual_grad = False
+anneal='inverse'
+case_type = 'fpga_placement'
 
 for instance in instances:
     place_type = PlaceType.IO
@@ -60,11 +53,30 @@ for instance in instances:
     INFO(f'instance {instance}, predicted alpha {alpha}')
     fpga_placer.set_alpha(alpha)
     
-    case_placements = FEM.from_file(case_type, instance, fpga_placer, index_start=1)
-
-    case_placements.set_up_solver(num_trials, num_steps, betamin=0.001, betamax=0.5, anneal=anneal, dev=dev, q=area_size, 
-                                manual_grad=manual_grad, drawer=global_drawer)
-    config, result = case_placements.solve()
+    optimizer = FPGAPlacementOptimizer(
+        num_inst=fpga_placer.opti_insts_num,
+        num_fixed_inst=fpga_placer.fixed_insts_num,
+        num_site=fpga_placer.avail_sites_num,
+        coupling_matrix=fpga_placer.net_manager.insts_matrix,
+        site_coords_matrix=fpga_placer.logic_site_coords,
+        constraint_weight=1.0,
+        num_trials=num_trials,
+        num_steps=num_steps,
+        dev=dev,
+        betamin=0.01,
+        betamax=0.5,
+        anneal='inverse',
+        optimizer='adam',
+        learning_rate=0.1,
+        h_factor=0.01,
+        seed=1,
+        dtype=torch.float32,
+        with_io=(place_type == PlaceType.IO),
+        manual_grad=manual_grad
+    )
+    
+    config, result = optimizer.optimize(area_width=area_length)
+    
     optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
 
     legalizer = Legalizer(placer=fpga_placer,
@@ -94,101 +106,4 @@ for instance in instances:
 
     if draw_final_placement:
         global_drawer.draw_place_and_route(placement_legalized[0], routes, None, False, 1000, title_suffix="Final Placement with Routing")
-            
 
-        
-        
-        
-# print("\nINFO: Loading FPGA design...")
-# fpga_wrapper = FpgaPlacer()
-# fpga_wrapper.init_placement('./vivado/output_dir/post_impl.dcp', 'optimized_placement.dcp')
-
-# # Parse FPGA design to get coupling matrix
-# num_inst, num_site, J, J_extend = parse_fpga_design(fpga_wrapper)
-
-# # Get layout dimensions
-# area_length = fpga_wrapper.bbox['area_length']
-
-# print(f"INFO: Number of instances: {num_inst}")
-# print(f"INFO: Number of sites: {num_site}")
-# print(f"INFO: Area length: {area_length}")
-# print(f"INFO: Grid size: {area_length} × {area_length} = {area_length ** 2} positions")
-
-# # Create site coordinates matrix for all grid positions
-# print("\nINFO: Creating site coordinates matrix...")
-# site_coords_matrix = torch.cartesian_prod(
-#     torch.arange(area_length, dtype=torch.float32),
-#     torch.arange(area_length, dtype=torch.float32)
-# )
-# print(f"INFO: Site coordinates shape: {site_coords_matrix.shape}")
-
-# # Set up visualization
-# global_drawer = PlacementDrawer(placer=fpga_wrapper, num_subplots=5, debug_mode=False)
-
-# # Create optimizer
-# optimizer = FPGAPlacementOptimizer(
-#     num_inst=num_inst,
-#     num_site=site_coords_matrix.shape[0],
-#     coupling_matrix=J,
-#     site_coords_matrix=site_coords_matrix,
-#     drawer=None,
-#     visualization_steps=[0, 250, 500, 750, 999],
-#     constraint_weight=1.0
-# )
-
-# # Solve with optimizer
-# print("\nINFO: Starting FEM optimization...")
-# config, result = optimizer.optimize(
-#     num_trials=num_trials,
-#     num_steps=num_steps,
-#     dev=dev,
-#     area_width=area_length,
-#     betamin=0.01,
-#     betamax=0.5,
-#     anneal='inverse',
-#     optimizer='adam',
-#     learning_rate=0.1,
-#     h_factor=0.01,
-#     seed=1,
-#     dtype=torch.float32
-# )
-
-# # Find optimal solution
-# optimal_inds = torch.argwhere(result == result.min()).reshape(-1)
-# print(f"\nINFO: Optimal indices: {optimal_inds.tolist()} with min HPWL: {result.min():.2f}")
-# grid_coords = config[optimal_inds[0]]  # Shape: [num_inst, 2]
-
-# # Convert grid coordinates to real FPGA coordinates
-# print("INFO: Converting grid coordinates to real coordinates...")
-# logic_grid = fpga_wrapper.get_grid('logic')
-# real_coords = logic_grid.to_real_coords_tensor(grid_coords)
-
-# # Legalize placement
-# print("INFO: Legalizing placement...")
-# legalizer = Legalizer(placer=fpga_wrapper, device=dev)
-# logic_ids = torch.arange(num_inst)
-# placement_legalized, overlap, hpwl_before, hpwl_after = legalizer.legalize_placement(
-#     real_coords, logic_ids
-# )
-
-# # Calculate final HPWL
-# print(f"INFO: HPWL before legalization: {hpwl_before['hpwl']:.2f}")
-# print(f"INFO: HPWL after legalization: {hpwl_after['hpwl']:.2f}")
-# print(f"INFO: Overlap violations: {overlap}")
-
-# # Route connections
-# print("INFO: Routing connections...")
-# router = Router(placer=fpga_wrapper)
-# routes = router.route_connections(J, placement_legalized[0])
-
-# # Visualize final result
-# global_drawer.draw_place_and_route(
-#     logic_coords=placement_legalized[0],
-#     routes=routes,
-#     io_coords=None,
-#     include_io=False,
-#     iteration=num_steps,
-#     title_suffix="Final Placement"
-# )
-
-# print("\nINFO: FPGA placement complete!")

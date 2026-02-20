@@ -1,7 +1,7 @@
 import torch
 from math import log
-from typing import Optional, List, Tuple
-from .objectives import expected_fpga_placement, infer_placements
+from typing import Tuple
+from .objectives import *
 from .drawer import PlacementDrawer
 
 
@@ -26,27 +26,31 @@ class FPGAPlacementOptimizer:
     This matches the algorithm from the master branch, using pre-computed
     site coordinate matrices for HPWL calculation.
 
-    Example:
-        >>> optimizer = FPGAPlacementOptimizer(
-        ...     num_inst, num_site, J, site_coords_matrix,
-        ...     drawer=global_drawer,
-        ...     visualization_steps=[0, 250, 500, 750, 999]
-        ... )
-        >>> config, result = optimizer.optimize(
-        ...     num_trials=10,
-        ...     num_steps=1000
-        ... )
     """
 
     def __init__(
             self,
             num_inst: int,
+            num_fixed_inst: int,
             num_site: int,
             coupling_matrix: torch.Tensor,
             site_coords_matrix: torch.Tensor,
-            drawer: Optional[PlacementDrawer] = None,
-            visualization_steps: Optional[List[int]] = None,
-            constraint_weight: float = 1.0
+            io_site_connect_matrix: torch.Tensor = None,
+            io_site_coords: torch.Tensor = None,
+            constraint_weight: float = 1.0,
+            num_trials: int = 10,
+            num_steps: int = 1000,
+            dev: str = 'cpu',
+            betamin: float = 0.01,
+            betamax: float = 0.5,
+            anneal: str = 'inverse',
+            optimizer: str = 'adam',
+            learning_rate: float = 0.1,
+            h_factor: float = 0.01,
+            seed: int = 1,
+            dtype: torch.dtype = torch.float32,
+            with_io: bool = False,
+            manual_grad: bool = False,
         ):
         """
         Initialize the FPGA placement optimizer with QUBO formulation.
@@ -61,165 +65,129 @@ class FPGAPlacementOptimizer:
             constraint_weight: Weight for constraint loss (alpha parameter)
         """
         self.num_inst = num_inst
+        self.fixed_insts_num = num_fixed_inst
         self.num_site = num_site
         self.coupling_matrix = coupling_matrix
         self.site_coords_matrix = site_coords_matrix
-        self.drawer = drawer
-        self.visualization_steps = visualization_steps or [0, 250, 500, 750, 999]
+        self.io_site_connect_matrix = io_site_connect_matrix
+        self.io_site_coords = io_site_coords
+        
+        # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor      # Net to slice sites mapping tensor
+        # self.io_site_connect_matrix = self.fpga_wrapper.net_manager.io_insts_matrix
+        # self.site_coords = self.fpga_wrapper.logic_site_coords
+        # self.io_site_coords = self.fpga_wrapper.io_site_coords
+        # self.bbox_length = self.fpga_wrapper.grids['logic'].area_length
+        # self.constraint_weight = self.fpga_wrapper.constraint_weight
+        
         self.constraint_weight = constraint_weight
+        
+        self.num_trials = num_trials
+        self.num_steps = num_steps
+        self.dev = dev
 
-    def _initialize_potentials(self, num_trials, dev, dtype, h_factor, seed):
-        """
-        Initialize potentials for site assignments.
+        if anneal == 'lin':
+            betas = torch.linspace(betamin, betamax, num_steps)
+        elif anneal == 'exp':
+            betas = torch.exp(torch.linspace(log(betamin), log(betamax),num_steps))
+        elif anneal == 'inverse':
+            betas = 1 / torch.linspace(betamax, betamin, num_steps)
+        self.betas = betas.to(self.dtype).to(self.dev) 
+        
+        self.optimizer = optimizer
+        self.learning_rate = learning_rate
+        self.h_factor = h_factor
+        self.seed = seed
+        self.dtype = dtype
+        self.with_io = with_io
+        self.manual_grad = manual_grad
 
-        Args:
-            num_trials: Number of parallel trials
-            dev: Device ('cpu' or 'cuda')
-            dtype: Torch dtype
-            h_factor: Initialization scale factor
-            seed: Random seed
+    def _initialize(self):
 
-        Returns:
-            h: Initialized potentials [num_trials, num_inst, num_site]
-        """
-        torch.manual_seed(seed)
+        torch.manual_seed(self.seed)
+        
+        if self.with_io:
+            h_logic = self.h_factor * torch.randn(
+                [self.num_trials, self.num_inst, self.num_site], 
+                device=self.dev, dtype=self.dtype
+            )
+            
+            h_io = self.h_factor * torch.randn(
+                [self.num_trials, self.fixed_insts_num, self.fixed_insts_num], 
+                device=self.dev, dtype=self.dtype
+            )
 
-        h = h_factor * torch.randn(
-            [num_trials, self.num_inst, self.num_site],
-            device=dev, dtype=dtype
+            if not self.manual_grad:
+                h_logic.requires_grad=True
+                h_io.requires_grad=True
+
+            return h_logic, h_io
+
+        h = self.h_factor * torch.randn(
+            [self.num_trials, self.num_inst, self.num_site],
+            device=self.dev, dtype=self.dtype
         )
 
-        h.requires_grad = True
+        if not self.manual_grad:
+            h.requires_grad = True
 
         return h
 
-    def _setup_optimizer(self, params, optimizer_name, learning_rate):
+    def _setup_optimizer(self, params):
         """Set up the torch optimizer."""
-        if optimizer_name == 'adam':
-            return torch.optim.Adam(params, lr=learning_rate)
-        elif optimizer_name == 'rmsprop':
+        if self.optimizer == 'adam':
+            return torch.optim.Adam(params, lr=self.learning_rate)
+        elif self.optimizer == 'rmsprop':
             return torch.optim.RMSprop(
-                params, lr=learning_rate, alpha=0.98, eps=1e-08,
+                params, lr=self.learning_rate, alpha=0.98, eps=1e-08,
                 weight_decay=0.01, momentum=0.91, centered=False
             )
         else:
             raise ValueError("Unknown optimizer, valid choices are ['adam', 'rmsprop'].")
 
-    def _setup_betas(self, num_steps, betamin, betamax, anneal, dev, dtype):
-        """Set up temperature schedule (matches master branch)."""
-        if anneal == 'lin':
-            betas = torch.linspace(betamin, betamax, num_steps)
-        elif anneal == 'exp':
-            betas = torch.exp(torch.linspace(log(betamin), log(betamax), num_steps))
-        elif anneal == 'inverse':
-            # IMPORTANT: Master uses betamax, betamin (swapped order)
-            betas = 1 / torch.linspace(betamax, betamin, num_steps)
-        else:
-            raise ValueError(f"Unknown anneal schedule: {anneal}")
+    def iterate_placement(self, area_width):
+        h = self._initialize()
+        opt = self._setup_optimizer([h], self.optimizer, self.learning_rate)
 
-        return betas.to(dtype).to(dev)
-
-    def iterate_placement(
-            self, num_trials, num_steps, dev, dtype,
-            betamin, betamax, anneal, optimizer_name, learning_rate,
-            h_factor, seed, area_width
-        ):
-        """
-        FEM optimization loop for FPGA placement with QUBO formulation.
-
-        Uses free energy minimization with HPWL and constraint losses,
-        matching the master branch algorithm.
-        """
-        # Initialize
-        h = self._initialize_potentials(
-            num_trials, dev, dtype, h_factor, seed
-        )
-        opt = self._setup_optimizer([h], optimizer_name, learning_rate)
-        betas = self._setup_betas(num_steps, betamin, betamax, anneal, dev, dtype)
-
-        # Iterate
-        for step in range(num_steps):
-            # Convert potentials to probabilities
+        for step in range(self.num_steps):
             p = torch.softmax(h, dim=2)
-
             opt.zero_grad()
 
-            # Calculate total loss using QUBO formulation (matches master branch)
-            total_loss = expected_fpga_placement(
+            loss = expected_fpga_placement(
                 self.coupling_matrix, p, self.site_coords_matrix,
                 step, area_width, self.constraint_weight
             )
 
-            # Calculate free energy
-            free_energy = total_loss - entropy_q(p) / betas[step]
-
-            # Backpropagate
+            free_energy = loss - entropy_q(p) / self.betas[step]
             free_energy.backward(gradient=torch.ones_like(free_energy))
             opt.step()
 
-            # Visualization at specified steps
-            if self.drawer is not None and step in self.visualization_steps:
-                from .objectives import get_hard_placements_from_index
-                coords = get_hard_placements_from_index(p, self.site_coords_matrix)
-                self.drawer.add_placement(coords[0].detach(), step)
-                print(f"INFO: Step {step}, Total loss = {[f'{x:.2f}' for x in total_loss.tolist()]}, "
-                      f"Free energy = {[f'{x:.2f}' for x in free_energy.tolist()]}")
-
-        # Draw multi-step visualization
-        if self.drawer is not None and len(self.drawer.placement_history) > 0:
-            self.drawer.draw_multi_step_placement()
-
         return p
+    
+    def iterate_placement_with_io(self):
+        h_logic, h_io = self._initialize()
+        opt = self._setup_optimizer([h_logic, h_io], self.optimizer, self.learning_rate)
 
-    def optimize(
-            self,
-            num_trials: int = 10,
-            num_steps: int = 1000,
-            dev: str = 'cpu',
-            area_width: Optional[int] = None,
-            betamin: float = 0.01,
-            betamax: float = 0.5,
-            anneal: str = 'inverse',
-            optimizer: str = 'adam',
-            learning_rate: float = 0.1,
-            h_factor: float = 0.01,
-            seed: int = 1,
-            dtype: torch.dtype = torch.float32,
-            **kwargs
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Run FPGA placement optimization with QUBO formulation.
+        for step in range(self.num_steps):
+            p_logic = torch.softmax(h_logic, dim=2)
+            p_io = torch.softmax(h_io, dim=2)
+            opt.zero_grad()
 
-        Args:
-            num_trials: Number of parallel optimization trials
-            num_steps: Number of optimization steps
-            dev: Device to run on ('cpu' or 'cuda')
-            area_width: Grid width (required for constraint loss calculation)
-            betamin: Minimum inverse temperature
-            betamax: Maximum inverse temperature
-            anneal: Annealing schedule ('lin', 'exp', or 'inverse')
-            optimizer: Optimizer type ('adam' or 'rmsprop')
-            learning_rate: Learning rate for optimization
-            h_factor: Initialization scale factor
-            seed: Random seed
-            dtype: Torch dtype
+            loss = expected_fpga_placement_with_io(
+                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_weight)
 
-        Returns:
-            config: Optimized placement probabilities [num_trials, num_inst, num_site]
-            result: HPWL values for each trial [num_trials]
-        """
-        if area_width is None:
-            # Infer from site coordinates
-            area_width = int(self.site_coords_matrix[:, 0].max().item()) + 1
+            free_energy = loss - (entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step]
+            free_energy.backward(gradient=torch.ones_like(free_energy))
+            opt.step()
 
-        # Run FEM iteration
-        p = self.iterate_placement(
-            num_trials, num_steps, dev, dtype,
-            betamin, betamax, anneal, optimizer, learning_rate,
-            h_factor, seed, area_width
-        )
+        return p_logic, p_io
 
-        # Inference
-        config, result = infer_placements(self.coupling_matrix, p, area_width, self.site_coords_matrix)
+    def optimize(self, area_width) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        return config, result
+        if self.with_io:
+            p = self.iterate_placement_with_io()
+            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords, self.io_site_coords)
+            return config, result
+        else:
+            p = self.iterate_placement(area_width)
+            config, result = infer_placements(self.coupling_matrix, p, area_width, self.site_coords_matrix)
+            return config, result

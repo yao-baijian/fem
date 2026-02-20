@@ -1,267 +1,314 @@
-from .utils import *
+import sys
+sys.path.append('.')
+from utils import *
 import random
-import rapidwright
+import io
+import sys
 import torch
-from enum import Enum
-import numpy as np
-
-class PlaceType(Enum):
-    CENTERED = 1
-    IO = 2
-    OTHER = 3
+import rapidwright
+from contextlib import contextmanager
+from .net import NetManager
+from .grid import Grid
+from .config import *
+from .logger import INFO, WARNING, ERROR
 
 from com.xilinx.rapidwright.design import Design
 from com.xilinx.rapidwright.device import Device, Site, SiteTypeEnum
 from com.xilinx.rapidwright.rwroute import RWRoute
 
+
+
 class FpgaPlacer:
 
-    def __init__(self, utilization_factor = 0.95):
+    def __init__(self, 
+                 place_orientation = PlaceType.CENTERED, 
+                 grid_type = GridType.SQUARE,
+                 utilization_factor = 0.3,
+                 debug = True,
+                 device = 'cpu'):
+        
+        self.total_insts_num = 0
+        self.opti_insts_num = 0
+        self.fixed_insts_num = 0
+        self.other_insts_num = 0
+        self.avail_sites_num = 0
 
-        self.slice_site_enum = [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
-
-        # Only true IO pads - matches master branch
-        self.io_site_enum = [SiteTypeEnum.HPIOB,
-                             SiteTypeEnum.HRIO]
-
-        self.clock_site_enum = [SiteTypeEnum.BUFGCE]  # NOT USED NOW
-
-        self.utilization_factor = utilization_factor
-        self.num_optimizable_insts = 0
-
-        self.num_of_instance = 0
-        self.num_of_sites = 0
-
-        self.available_sites = []
         self.optimizable_insts = []
         self.fixed_insts = []
         self.clock_insts = []
+        self.available_sites = []
 
         self.cells = []
-        self.bbox = {}
-        self.io_area = {}
-        self.clock_area = {}
+        
+        self.grids = {
+            'logic': Grid(name='logic', device=device),
+            'io': Grid(name='io', device=device),
+            'clock': Grid(name='clock', device=device)
+        }
 
         self.unfixed_placements = {}
         self.fixed_placements = {}
-
-        self.site_to_site_connectivity = {}
-        self.io_to_site_connectivity = {}
-        self.net_to_sites = {}
-        self.net_to_slice_sites_tensor = None
-
-        self.optimizable_site_inst_to_id = {}
-        self.available_site_to_id = {}
+        self.optimizable_site_inst_to_id = {} 
+        self.available_site_to_id = {}    
         self.optimizable_id_to_site_inst = {}
-        self.available_id_to_site = {}
+        self.available_id_to_site = {}   
+        
+        self.logic_ids = None
+        self.io_ids = None
 
-        self.fixed_site_to_id = {}
+        self.fixed_site_to_id = {}    
         self.fixed_id_to_site = {}
-
-        self.nets = None
-
-        self.total_hpwl = 0.0
-        self.net_hpwl = {}
-        self.net_bbox = {}
-
-        self.total_hpwl_no_io = 0.0
-        self.net_hpwl_no_io = {}
-        self.net_bbox_no_io = {}
-
-        self.place_orientation = PlaceType.IO
-
+        self.place_orientation = place_orientation
+        self.grid_type = grid_type
+        self.utilization_factor = utilization_factor
+        self.debug = debug
+        self.net_manager = NetManager(self.get_site_inst_id_by_name, 
+                                      self.get_site_inst_name_by_id,
+                                      self.map_coords_to_instance,
+                                      debug=self.debug,
+                                      device=device)
+        
+        
+        self.logic_site_coords = None
+        self.site_coords_all = None
+        
+        self.device = device
+        
+        constraint_weight = 0
         pass
-
+    
+    def with_io(self):
+        if self.place_orientation == PlaceType.IO:
+            return True
+        return False
+    
+    def set_alpha(self, alpha):
+        self.constraint_weight = alpha
+    
+    def get_grid(self, grid_name) -> Grid:
+        return self.grids[grid_name]
+    
+    @contextmanager
+    def suppress_rapidwright_output(self):
+        original_py_out = sys.stdout
+        original_py_err = sys.stderr
+        
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        
+        try:
+            from java.lang import System
+            from java.io import PrintStream
+            from java.io import ByteArrayOutputStream
+            
+            original_java_out = System.out
+            original_java_err = System.err
+            
+            baos = ByteArrayOutputStream()
+            null_stream = PrintStream(baos)
+            
+            System.setOut(null_stream)
+            System.setErr(null_stream)
+            
+            yield
+            
+        finally:
+            sys.stdout = original_py_out
+            sys.stderr = original_py_err
+            
+            try:
+                System.setOut(original_java_out)
+                System.setErr(original_java_err)
+            except NameError:
+                pass
+        
     def get_site_inst_id_by_name(self, site_name):
         if site_name in self.optimizable_site_inst_to_id:
             return self.optimizable_site_inst_to_id.get(site_name)
         elif site_name in self.fixed_site_to_id:
-            return self.fixed_site_to_id.get(site_name) + self.num_optimizable_insts
+            return self.fixed_site_to_id.get(site_name) + self.opti_insts_num
         else:
+            WARNING(f"Cannot find site_inst id for site_name: {site_name}")
             return None
-
+        
     def get_site_inst_name_by_id(self, id):
         if id in self.optimizable_id_to_site_inst:
             return self.optimizable_id_to_site_inst.get(id)
-        elif (id - self.num_optimizable_insts) in self.fixed_id_to_site:
-            return self.fixed_id_to_site.get(id - self.num_optimizable_insts)
+        elif (id - self.opti_insts_num) in self.fixed_id_to_site:
+            return self.fixed_id_to_site.get(id - self.opti_insts_num)
         else:
+            WARNING(f"Cannot find site_inst name for id: {id}")
             return None
 
     def get_site_id_by_name(self, site_name):
         return self.available_site_to_id.get(site_name)
-
+    
     def get_site_name_by_id(self, id):
         return self.available_id_to_site.get(id)
 
     def get_optimizable_insts(self, design):
-
+        
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
 
-            if site_type in self.slice_site_enum:
+            if site_type in SLICE_SITE_ENUM:
                 self.optimizable_insts.append(site)
-
+    
     def get_fixed_insts(self, design):
-
+        
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
-
-            if site_type in self.io_site_enum:
+            
+            if site_type in IO_SITE_ENUM:
                 self.fixed_insts.append(site)
 
-    def get_clock_insts(self, design):
-        """Identify clock instances and report unclassified site types."""
-        from .logger import INFO
-
-        unclassified_types = set()
-
+    def get_other_insts(self, design):
+        
         for site in design.getSiteInsts():
             site_type = site.getSiteTypeEnum()
-
-            if site_type in self.clock_site_enum:
+            
+            if site_type in OTHER_SITE_ENUM:
                 # self.fixed_insts.append(site)
                 continue
 
             elif site not in self.optimizable_insts and site not in self.fixed_insts:
-                # Collect unclassified types for summary (e.g., BITSLICE_COMPONENT_RX_TX)
-                unclassified_types.add(str(site_type))
-
-        if unclassified_types:
-            INFO(f"Found {len(unclassified_types)} unclassified site types (ignored): {', '.join(sorted(unclassified_types))}")
+                WARNING(f'Cannot orient site type, site: {site.getName()}, type: {site.getSiteTypeEnum()}')
 
     def get_available_target_sites(self, device):
-
+        
         for site in device.getAllSites():
             site_x = site.getInstanceX()
             site_y = site.getInstanceY()
 
             # print(f'site: {site.getName()}, type: {site.getSiteTypeEnum()}, x: {site_x}, y: {site_y}')
-
-            if (self.bbox['start_x'] <= site_x <= self.bbox['end_x'] and
-                self.bbox['start_y'] <= site_y <= self.bbox['end_y'] ):
-
+            
+            if (self.grids['logic'].start_x <= site_x <= self.grids['logic'].end_x and 
+                self.grids['logic'].start_y <= site_y <= self.grids['logic'].end_y ):
+                
                 site_type = site.getSiteTypeEnum()
 
-                if site_type in self.slice_site_enum:
+                if site_type in SLICE_SITE_ENUM:
                     self.available_sites.append(site)
-
+        
         if len(self.available_sites) < len(self.optimizable_insts):
-            print(f"Warning: available sites({len(self.available_sites)}) less than optimizable sites({len(self.optimizable_insts)})")
+            WARNING(f"Available sites({len(self.available_sites)}) less than optimizable sites({len(self.optimizable_insts)})")
             # TODO add sites here
+            
+        self.avail_sites_num = len(self.available_sites)
+        
+    def get_ids(self):
+        return self.logic_ids, self.io_ids
 
-    def map_site_to_id(self):
+    def _map_site_to_id(self):
 
-        for idx, site_inst in enumerate(self.optimizable_insts):
+        for idx, site_inst in enumerate(self.optimizable_insts): 
             site_name = site_inst.getName()
             self.optimizable_site_inst_to_id[site_name] = idx
             self.optimizable_id_to_site_inst[idx] = site_name
+        
+        self.logic_ids = torch.arange(self.opti_insts_num, device=self.device)
 
-        self.num_optimizable_insts = len(self.optimizable_insts)
-
-        for idx, site_inst in enumerate(self.fixed_insts):
+        for idx, site_inst in enumerate(self.fixed_insts): 
             site_name = site_inst.getName()
             self.fixed_site_to_id[site_name] = idx
             self.fixed_id_to_site[idx] = site_name
-
+            
+        self.io_ids = torch.arange(self.opti_insts_num, self.opti_insts_num + self.fixed_insts_num, device=self.device)
+        
         for idx, site in enumerate(self.available_sites):
             site_name = site.getName()
             self.available_site_to_id[site_name] = idx
             self.available_id_to_site[idx] = site_name
 
-    def init_place_areas(self, design):
+        with open('result/optimizable_site_mapping_debug.tsv', 'w') as f:
+            f.write("Type\tSiteInst_Name\tID\n")
+            for idx in range(len(self.optimizable_insts)):
+                site_name = self.optimizable_id_to_site_inst[idx]
+                f.write(f"Optimizable\t{site_name}\t{idx}\n")
+            f.write(f"TOTAL\t{len(self.optimizable_insts)}\n\n")
+            
+        with open('result/fixed_site_mapping_debug.tsv', 'w') as f:
+            f.write("Type\tSiteInst_Name\tID\n")
+            for idx in range(len(self.fixed_insts)):
+                site_name = self.fixed_id_to_site[idx]
+                f.write(f"Fixed\t{site_name}\t{idx}\n")
+            f.write(f"TOTAL\t{len(self.fixed_insts)}\n\n")
 
-        total_site_insts = len(design.getSiteInsts())
-        other_sites = total_site_insts - (len(self.optimizable_insts) + len(self.fixed_insts))
+    def _init_place_areas(self, design):
+        self.total_insts_num = len(design.getSiteInsts())
+        self.opti_insts_num = len(self.optimizable_insts)
+        self.fixed_insts_num = len(self.fixed_insts)
+        self.other_insts_num = self.total_insts_num - (self.opti_insts_num + self.fixed_insts_num)
+        
+        self.constraint_weight = self.opti_insts_num / 2
 
-        print(f"INFO, estimate sites number: {len(self.optimizable_insts)} slice sites, {len(self.fixed_insts)} fixed sites, {other_sites} other sites, total {total_site_insts} sites.")
-
-        # IMPORTANT: Use only optimizable instances for grid calculation (matches master branch)
-        area_length = int(np.ceil(np.sqrt(len(self.optimizable_insts) / self.utilization_factor)))
-        area_height = area_length  # Square grid
-
-        # Match master's coordinate system: centered y-axis
+        INFO(f"Sites stat: {self.opti_insts_num} slice sites, {self.fixed_insts_num} fixed sites, {self.other_insts_num} other sites, total {self.total_insts_num} sites.")
+        
+        if self.grid_type == GridType.SQUARE:
+            area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
+            area_height = area_length
+        else:
+            area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
+            area_height = 0
+        
         start_x = 0
         end_x = start_x + area_length
-        start_y = 0 - area_height // 2  # Centered around 0
+        start_y = 0 - area_height // 2
         end_y = start_y + area_height
-
-        self.bbox = {
-            'start_x': start_x,
-            'end_x': end_x,
-            'start_y': start_y,
-            'end_y': end_y,
-            'estimated_sites': total_site_insts,
-            'area_length': area_length,
-            'area_width': area_height,
-            'area_size': area_length * area_height,
-            'utilization': len(self.optimizable_insts) / (area_length * area_height) if area_height > 0 else 0
-        }
-
-        print(f"INFO: estimate area {area_length} x {area_height} , start=({start_x},{start_y}), end=({end_x},{end_y})")
+        
+        logic_grid = self.grids['logic']
+        logic_grid.start_x = start_x
+        logic_grid.start_y = start_y
+        logic_grid.area_length = area_length
+        logic_grid.area_width = area_height
+        logic_grid.__post_init__()
+        
+        utilization = self.opti_insts_num / (area_length * area_height)
+        
+        INFO(f"Estimate area {area_length} x {area_height} , start=({start_x}, {start_y}), end=({end_x}, {end_y}), utilization {utilization:.3f}")
 
     def _init_io_area(self):
         num_pins = len(self.fixed_insts)
-
+        
         io_width = 1
         io_height = num_pins
-
-        io_start_x = self.bbox['start_x'] - io_width - 2
-        io_end_x = io_start_x + io_width
-
-        bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
+        
+        io_start_x = self.grids['logic'].start_x - io_width       
+        bbox_center_y = self.grids['logic'].center_y
         io_start_y = bbox_center_y - io_height // 2
-        io_end_y = io_start_y + io_height
 
-        self.io_area = {
-            'type': 'left_io',
-            'start_x': io_start_x,
-            'end_x': io_end_x,
-            'start_y': io_start_y,
-            'end_y': io_end_y,
-            'width': io_width,
-            'height': io_height,
-            'center_y': (io_start_y + io_end_y) // 2,
-            'num_pins': num_pins
-        }
-
-        print(f"INFO: Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_end_x}, {io_end_y})")
+        io_grid = self.grids['io']
+        io_grid.start_x = io_start_x
+        io_grid.start_y = io_start_y
+        io_grid.area_length = io_width
+        io_grid.area_width = io_height
+        io_grid.__post_init__()
+        
+        INFO(f"Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
 
     def _init_clock_buffer_area(self):
         num_clk_buf = len(self.clock_insts)
-
-        clock_width = 1
+        clock_length = 1
         clock_height = num_clk_buf
-
-        clock_start_x = self.bbox['start_x'] - 1
-        clock_end_x = clock_start_x + clock_width
-
-        bbox_center_y = ( self.bbox['start_y'] + self.bbox['end_y'] ) // 2
+        
+        clock_start_x = self.grids['logic'].start_x
+        bbox_center_y = self.grids['logic'].center_y
         clock_start_y = bbox_center_y - clock_height // 2
-        clock_end_y = clock_start_y + clock_height
-
-        self.clock_area = {
-            'type': 'clock_buffers',
-            'start_x': clock_start_x,
-            'end_x': clock_end_x,
-            'start_y': clock_start_y,
-            'end_y': clock_end_y,
-            'width': clock_width,
-            'height': clock_height,
-            'center_y': (clock_start_y + clock_end_y) // 2,
-            'num_pins': num_clk_buf,
-        }
-
-        print(f"INFO: Clock buffer area - position: ({clock_start_x}, {clock_start_y}) to ({clock_end_x}, {clock_end_y})")
+        
+        clock_grid = self.grids['clock']
+        clock_grid.start_x = clock_start_x
+        clock_grid.start_y = clock_start_y
+        clock_grid.area_length = clock_length
+        clock_grid.area_width = clock_height
+        clock_grid.__post_init__()
+        
+        INFO(f"Clock buffer area - position: ({clock_start_x}, {clock_start_y}) to ({clock_grid.end_x}, {clock_grid.end_y})")
 
     def random_initial_placement(self, design):
-
+    
         design.unplaceDesign()
-
-        self.num_of_instance = len(self.optimizable_insts)
-        self.num_of_sites = len(self.available_sites)
-
-        print(f"INFO: number of optimizable instance: {self.num_of_instance}, number of available sites: {self.num_of_sites}")
+        
+        INFO(f"Optimizable instances num: {self.opti_insts_num}, available sites num: {self.avail_sites_num}")
 
         random.shuffle(self.available_sites)
 
@@ -269,16 +316,15 @@ class FpgaPlacer:
         for i, site in enumerate(self.optimizable_insts):
             if i < len(self.available_sites):
                 target_site = self.available_sites[i]
-
+                
                 if self.is_site_compatible(site, target_site):
                     # self.place_site(site, target_site)
-
+                    
                     self.unfixed_placements[site.getName()] = {
                         'target_site': target_site,
                         'source_site': site,
                         'target_x': target_site.getInstanceX(),
-                        'target_y': target_site.getInstanceY(),
-                        'bel': self.suggest_bel_for_site(site, target_site)
+                        'target_y': target_site.getInstanceY()
                     }
                     placed_count += 1
                 else:
@@ -289,7 +335,7 @@ class FpgaPlacer:
                         'target_y': -1,
                         'bel': None,
                     }
-                    print(f"ERROR: site {site.getName()}({site.getSiteTypeEnum().name}) is not compatible {target_site.getName()}({target_site.getSiteTypeEnum().name})")
+                    ERROR(f"Site {site.getName()}({site.getSiteTypeEnum().name}) is not compatible {target_site.getName()}({target_site.getSiteTypeEnum().name})")
             else:
                 self.unfixed_placements[site.getName()] = {
                     'target_site': None,
@@ -298,7 +344,7 @@ class FpgaPlacer:
                     'target_y': -1,
                     'bel': None,
                 }
-                print(f"ERROR: No more site for {site.getName()}")
+                ERROR(f"No more site for {site.getName()}")
 
         # Fixed sites
         for fixed_site in self.fixed_insts:
@@ -310,122 +356,28 @@ class FpgaPlacer:
                 'bel': None,
             }
 
-        print(f"INFO: initial placement {placed_count} for total {len(self.cells)} sites done, {len(self.fixed_placements)} remains.")
+        INFO(f"Initial placement {placed_count} for total {len(self.cells)} sites done, {len(self.fixed_placements)} remains.")
 
     def is_site_compatible(self, source_site, target_site):
         source_type = source_site.getSiteTypeEnum()
         target_type = target_site.getSiteTypeEnum()
-
+        
         if source_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]:
             return target_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
-
+        
         if source_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M]:
             return target_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M]
-
+        
         if source_type in [SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]:
             return target_type in [SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]
-
+        
         return source_type == target_type
-
-    # TODO need decide whether this is needed
-    def suggest_bel_for_site(self, source_site, target_site):
-        site_type = target_site.getSiteTypeEnum()
-
-        if site_type in [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]:
-            available_bels = ['A6LUT', 'B6LUT', 'C6LUT', 'D6LUT']
-            return available_bels[hash(source_site.getName()) % len(available_bels)]
-
-        elif site_type in [SiteTypeEnum.IOB33, SiteTypeEnum.IOB33M,
-                        SiteTypeEnum.IOB18, SiteTypeEnum.IOB18M]:
-            return 'IOB'
-
-        return 'UNKNOWN'
-
-    def record_site_connectivity(self):
-        sites_net_num = 0
-        sites_net_list = []
-        for net in self.nets:
-            if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
-                continue
-
-            net_name = net.getName()
-            logic_sites_in_net = set()  # 逻辑站点 (SLICE, DSP, BRAM等)
-            io_sites_in_net = set()     # IO 站点 (IOB, HPIOB等)
-
-            for pin in net.getPins():
-                site_inst = pin.getSiteInst()
-                site_inst_type = site_inst.getSiteTypeEnum()
-                # print(f'Net: {net_name}, Pin Site: {site_inst.getName()}, Type: {site_inst_type}')
-                # Slice site - Slice site
-                if site_inst_type in self.slice_site_enum:
-                    logic_site_name = site_inst.getName()
-                    logic_sites_in_net.add(logic_site_name)
-                else:
-                    # IO site - IO site | IO site - Slice site | Clock buffer - Slice site
-                    io_site_name = site_inst.getName()
-                    io_sites_in_net.add(io_site_name)
-
-            total_site_num = len(io_sites_in_net) + len(logic_sites_in_net)
-
-            if total_site_num >= 2:
-                # print(f'INFO: net {net_name}, io sites: {io_sites_in_net}, logic sites: {logic_sites_in_net}')
-                self.net_to_sites[net_name] = list(io_sites_in_net) + list(logic_sites_in_net)
-
-                io_sites_list = list(io_sites_in_net)
-                logic_sites_list = list(logic_sites_in_net)
-
-                for i in range(len(io_sites_list)):
-                    for j in range(len(logic_sites_list)):
-                        io_inst1, inst2 = io_sites_list[i], logic_sites_list[j]
-
-                        if io_inst1 not in self.io_to_site_connectivity:
-                            self.io_to_site_connectivity[io_inst1] = {}
-                        if inst2 not in self.io_to_site_connectivity[io_inst1]:
-                            self.io_to_site_connectivity[io_inst1][inst2] = 0
-                        self.io_to_site_connectivity[io_inst1][inst2] += 1
-
-                        if inst2 not in self.io_to_site_connectivity:
-                            self.io_to_site_connectivity[inst2] = {}
-                        if io_inst1 not in self.io_to_site_connectivity[inst2]:
-                            self.io_to_site_connectivity[inst2][io_inst1] = 0
-                        self.io_to_site_connectivity[inst2][io_inst1] += 1
-
-                for i in range(len(logic_sites_list)):
-                    for j in range(i + 1, len(logic_sites_list)):
-                        inst1, inst2 = logic_sites_list[i], logic_sites_list[j]
-
-                        if inst1 not in self.site_to_site_connectivity:
-                            self.site_to_site_connectivity[inst1] = {}
-                        if inst2 not in self.site_to_site_connectivity[inst1]:
-                            self.site_to_site_connectivity[inst1][inst2] = 0
-                        self.site_to_site_connectivity[inst1][inst2] += 1
-
-                        if inst2 not in self.site_to_site_connectivity:
-                            self.site_to_site_connectivity[inst2] = {}
-                        if inst1 not in self.site_to_site_connectivity[inst2]:
-                            self.site_to_site_connectivity[inst2][inst1] = 0
-                        self.site_to_site_connectivity[inst2][inst1] += 1
-            # else:
-            #     print(f"Warning: net {net_name}, skip.")
-
-            if len(logic_sites_in_net) >= 2:
-                sites_net_num += 1
-                sites_net_list.append(logic_sites_in_net)
-
-        self.net_to_slice_sites_tensor = torch.zeros(sites_net_num, len(self.optimizable_insts), dtype=torch.bool)
-
-        for net_idx, sites in enumerate(sites_net_list):
-            for site_name in sites:
-                instance_idx = self.get_site_inst_id_by_name(site_name)
-                self.net_to_slice_sites_tensor[net_idx, instance_idx] = True
-
-        print(f"INFO: process {len(self.nets)} network, total {len(self.site_to_site_connectivity)} site to site routes, \n \
-            {len(self.io_to_site_connectivity)} io to site routes, \n \
-            {len(self.net_to_sites)} inter-tile routes.")
-
+  
     def init_placement(self, dcp_file = '', edf_file='', dcp_output=''):
-
-        design = Design.readCheckpoint(dcp_file)
+        # Design.setAutoGenerateReadableEdif (false)
+        with self.suppress_rapidwright_output():
+            design = Design.readCheckpoint(dcp_file)
+        INFO(f"Reading DCP: {dcp_file} success")
         # routing report
         # design.unrouteDesign()
 
@@ -434,270 +386,86 @@ class FpgaPlacer:
         #     routed_design = RWRoute.routeDesignFullTimingDriven(design)
         # else:
         #     routed_design = RWRoute.routeDesignFullNonTimingDriven(design)
-
         device = design.getDevice()
-
         self.available_slices_ml = list(device.getAllCompatibleSites(SiteTypeEnum.SLICEL))
         self.available_slices_ml.extend(list(device.getAllCompatibleSites(SiteTypeEnum.SLICEM)))
-
         self.cells = design.getCells()
-
-        self.estimate_hpwl(design)
-
-        print(f"INFO: nets number: {len(self.nets)}, total hpwl: {self.total_hpwl:.2f}, without io: {self.total_hpwl_no_io:.2f}")
-
-        self.get_optimizable_insts(design)      # SLICEL
-        self.get_fixed_insts(design)            # HPIOB, BITSLICE_COMPONENT_RX_TX
-        self.get_clock_insts(design)            # BUFGCE
-        self.init_place_areas(design)
+        _, vivado_hpwl = self.net_manager.analyze_design_hpwl(design)
+        self.get_optimizable_insts(design) 
+        self.get_fixed_insts(design)         
+        self.get_other_insts(design)      
+        self._init_place_areas(design)
         self._init_io_area()
         self._init_clock_buffer_area()
         self.get_available_target_sites(device)
-        self.map_site_to_id()
-        self.record_site_connectivity()
+        self._map_site_to_id()
+        site_net_num, total_net_num = self.net_manager.analyze_nets(self.opti_insts_num, self.avail_sites_num, self.fixed_insts_num)
         self.random_initial_placement(design)
+        
+        self._get_place_area_coords()
+        self._get_io_area_coords()
+        self._get_combined_coords()
 
-        # Initialize NetManager using master's exact implementation
-        from .net import NetManager
-        self.net_manager = NetManager(
-            get_site_inst_id_by_name_func=self.get_site_inst_id_by_name,
-            get_site_inst_name_by_id_func=self.get_site_inst_name_by_id,
-            map_coords_to_instance_func=self._map_coords_to_instance,
-            debug=False,
-            device='cpu'
-        )
-        # Set the attributes that master expects
-        self.net_manager.nets = self.nets
-        self.net_manager.net_to_sites = self.net_to_sites
+        return vivado_hpwl, self.opti_insts_num, site_net_num, total_net_num
 
-        # Build site_to_nets mapping (inverse of net_to_sites)
-        for net_name, sites in self.net_to_sites.items():
-            for site_name in sites:
-                if site_name not in self.net_manager.site_to_nets:
-                    self.net_manager.site_to_nets[site_name] = []
-                self.net_manager.site_to_nets[site_name].append(net_name)
-
-        # Create net_tensor for global optimization (matches master branch)
-        # net_tensor is a [num_valid_nets, num_instances] boolean tensor
-        sites_net_list = []
-        for net_name, connected_sites in self.net_to_sites.items():
-            # Only include nets with 2+ logic sites (matching master's filtering)
-            logic_sites = set()
-            for site_name in connected_sites:
-                site_id = self.get_site_inst_id_by_name(site_name)
-                if site_id is not None and site_id < len(self.optimizable_insts):
-                    logic_sites.add(site_name)
-            if len(logic_sites) >= 2:
-                sites_net_list.append(logic_sites)
-
-        num_valid_nets = len(sites_net_list)
-        num_instances = len(self.optimizable_insts)
-        self.net_manager.net_tensor = torch.zeros(num_valid_nets, num_instances, dtype=torch.bool)
-
-        for net_idx, sites in enumerate(sites_net_list):
-            for site_name in sites:
-                instance_idx = self.get_site_inst_id_by_name(site_name)
-                if instance_idx is not None and instance_idx < num_instances:
-                    self.net_manager.net_tensor[net_idx, instance_idx] = True
-
-        print(f"INFO: Net tensor shape {self.net_manager.net_tensor.shape[0]} x {self.net_manager.net_tensor.shape[1]}")
-
-        # Build connectivity matrices like master
-        self._build_connectivity_matrices()
-
-    def _map_coords_to_instance(self, coords, io_coords=None, include_io=False):
-        """Map coordinates to instance names (matches master branch exactly)."""
+    def map_coords_to_instance(self, coords, io_coords=None, include_io=False):
         instance_coords = {}
-
-        # Map logic instances - store coords directly like master
+        
         for instance_id in range(len(coords)):
             site_name = self.get_site_inst_name_by_id(instance_id)
             instance_coords[site_name] = coords[instance_id]
 
-        # Map IO instances
-        if include_io and io_coords is not None:
+        if include_io:
             for instance_id in range(len(io_coords)):
-                site_name = self.get_site_inst_name_by_id(instance_id + self.num_optimizable_insts)
+                site_name = self.get_site_inst_name_by_id(instance_id + self.opti_insts_num)
                 instance_coords[site_name] = io_coords[instance_id]
-
+        
         return instance_coords
+        
+    def _get_place_area_coords(self):
+        place_length = self.grids['logic'].area_length
+        place_width = self.grids['logic'].area_width
+        
+        self.logic_site_coords = self.grids['logic'].to_real_coords_tensor(torch.cartesian_prod(
+            torch.arange(place_width, dtype=torch.float32, device=self.device),
+            torch.arange(place_length, dtype=torch.float32, device=self.device)
+        ))
 
-    def _build_connectivity_matrices(self):
-        """Build connectivity matrices for optimization (matches master branch)."""
-        # This is a placeholder - matrices are built in parse_fpga_design
-        pass
+    # def get_site_coords_all(num_locations, area_width):
+    #     indices = torch.arange(num_locations, dtype=torch.float32, device='cuda')
+    #     x_coords = indices % area_width
+    #     y_coords = indices // area_width
+    #     return torch.stack([x_coords, y_coords], dim=1)
 
-    def get_grid(self, grid_type: str):
-        """
-        Get Grid object for specified grid type.
+    def _get_io_area_coords(self):
+        self.io_site_coords = self.grids['io'].to_real_coords_tensor(torch.cartesian_prod(
+            torch.tensor([0], dtype=torch.float32, device=self.device),
+            torch.arange(self.fixed_insts_num, dtype=torch.float32, device=self.device) 
+        ))
+        
+    def _get_combined_coords(self):
+        logic_coords = self.logic_site_coords.clone()
+        adjusted_io_coords = self.io_site_coords.clone()
+        
+        place_height = self.grids['logic'].area_width
+        io_height = self.fixed_insts_num 
+    
+        logic_center_y = (place_height - 1) / 2.0
+        io_center_y = (io_height - 1) / 2.0 
+        
+        y_offset = logic_center_y - io_center_y
 
-        Args:
-            grid_type: 'logic', 'io', or 'clock'
+        adjusted_io_coords[:, 0] = -1.0 
+        adjusted_io_coords[:, 1] += y_offset
+        
+        self.site_coords_all = torch.cat([logic_coords, adjusted_io_coords], dim=0)
+        
+    def place(self, coords, io_coords=None, include_io=False):
+        # TODO replace the legalized logic into FPGA
+        min_x = min(site.getInstanceX() for site in self.available_slices_ml)
+        max_x = max(site.getInstanceX() for site in self.available_slices_ml)
+        min_y = min(site.getInstanceY() for site in self.available_slices_ml)
+        max_y = max(site.getInstanceY() for site in self.available_slices_ml)
 
-        Returns:
-            Grid object for the specified type
-        """
-        from .grid import Grid
-
-        if grid_type == 'logic':
-            return Grid('logic', self.bbox)
-        elif grid_type == 'io':
-            return Grid('io', self.io_area)
-        elif grid_type == 'clock':
-            return Grid('clock', self.clock_area)
-        else:
-            raise ValueError(f"Unknown grid type: {grid_type}. Must be 'logic', 'io', or 'clock'")
-
-    def estimate_hpwl(self, design):
-        self.total_hpwl = 0.0
-        self.net_hpwl.clear()
-        self.net_bbox.clear()
-
-        self.total_hpwl_no_io = 0.0
-        self.net_hpwl_no_io.clear()
-        self.net_bbox_no_io.clear()
-
-        self.nets = design.getNets()
-
-        for net in self.nets:
-            net_name = net.getName()
-            hpwl, bbox = self._calculate_net_hpwl_rapidwright(net, True)
-            self.net_hpwl[net_name] = hpwl
-            self.net_bbox[net_name] = bbox
-            self.total_hpwl += hpwl
-
-        for net in self.nets:
-            net_name = net.getName()
-            hpwl, bbox = self._calculate_net_hpwl_rapidwright(net, False)
-            self.net_hpwl_no_io[net_name] = hpwl
-            self.net_bbox_no_io[net_name] = bbox
-            self.total_hpwl_no_io += hpwl
-
-        return self.total_hpwl, self.total_hpwl_no_io
-
-    def _calculate_net_hpwl_rapidwright(self, net, include_io=True):
-
-        # if net.isClockNet():
-        #     print(f'{net.getName()} is a clock net')
-        #     for pin in net.getPins():
-        #         print(f'  pin: {pin.getName()}, site: {pin.getSiteInst().getName()}, type: {pin.getSiteInst().getSiteTypeEnum()}')
-
-        if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
-            return 0.0, {}
-
-        pins = net.getPins()
-        if len(pins) < 2:
-            return 0.0, {}
-
-        # Use set to deduplicate coordinates (multiple pins at same site/tile)
-        coordinates_set = set()
-        for pin in pins:
-
-            if not include_io and pin.getSiteInst().getSiteTypeEnum() in self.io_site_enum:
-                # print("pin: ", pin.getName(), " type: ", pin.getSiteInst().getSiteTypeEnum())
-                continue
-
-            # Use site instance coordinates for more accurate HPWL
-            site_inst = pin.getSiteInst()
-            coord = (site_inst.getInstanceX(), site_inst.getInstanceY())
-            # print(f"pin: {pin.getName()}, site: {pin.getSiteInst().getName()}, site x: {site_inst.getInstanceX()}, site y: {site_inst.getInstanceY()}")
-            coordinates_set.add(coord)
-
-        if len(coordinates_set) < 2:
-            return 0.0, {}
-
-        return self._calculate_hpwl_from_coordinates(list(coordinates_set))
-
-    def _calculate_hpwl_from_coordinates(self, coordinates):
-        x_coords = [coord[0] for coord in coordinates]
-        y_coords = [coord[1] for coord in coordinates]
-
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-
-        hpwl = (max_x - min_x) + (max_y - min_y)
-        bbox = {
-            'min_x': min_x, 'max_x': max_x,
-            'min_y': min_y, 'max_y': max_y,
-            'width': max_x - min_x,
-            'height': max_y - min_y,
-            'num_pins': len(coordinates)
-        }
-
-        return hpwl, bbox
-
-    def estimate_solver_hpwl(self, coords, io_coords, include_io=True):
-        """
-        Estimate HPWL from solver output coordinates.
-
-        Args:
-            coords: Logic instance coordinates [num_inst, 2]
-            io_coords: IO instance coordinates [num_io, 2] or None
-            include_io: Whether to include IO in HPWL calculation
-
-        Returns:
-            Dictionary with 'hpwl' (total) and 'hpwl_no_io' values
-        """
-        # Calculate total HPWL (with IO)
-        self.total_hpwl = 0.0
-        self.net_hpwl.clear()
-        self.net_bbox.clear()
-
-        instance_coords = {}
-        for instance_id in range(len(coords)):
-            site_name = self.get_site_inst_name_by_id(instance_id)
-            instance_coords[site_name] = coords[instance_id]
-
-        if include_io and io_coords is not None:
-            for instance_id in range(len(io_coords)):
-                site_name = self.get_site_inst_name_by_id(instance_id + self.num_optimizable_insts)
-                instance_coords[site_name] = io_coords[instance_id]
-
-        skipped = 0
-        for net_name, connected_sites in self.net_to_sites.items():
-            hpwl, bbox = self._calculate_net_hpwl_from_instance_coords(net_name, connected_sites, instance_coords, include_io=True)
-
-            if (hpwl == 0.0):
-                skipped += 1
-                continue
-
-            self.net_hpwl[net_name] = hpwl
-            self.net_bbox[net_name] = bbox
-            self.total_hpwl += hpwl
-
-        # Calculate HPWL without IO
-        self.total_hpwl_no_io = 0.0
-        self.net_hpwl_no_io.clear()
-        self.net_bbox_no_io.clear()
-
-        for net_name, connected_sites in self.net_to_sites.items():
-            hpwl, bbox = self._calculate_net_hpwl_from_instance_coords(net_name, connected_sites, instance_coords, include_io=False)
-
-            if (hpwl == 0.0):
-                continue
-
-            self.net_hpwl_no_io[net_name] = hpwl
-            self.net_bbox_no_io[net_name] = bbox
-            self.total_hpwl_no_io += hpwl
-
-        return {'hpwl': self.total_hpwl, 'hpwl_no_io': self.total_hpwl_no_io}
-
-    def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords, include_io=True):
-        coordinates = []
-        # print(f'INFO: connected sites: {connected_sites}')
-        for site_name in connected_sites:
-            if site_name in instance_coords:
-                # Skip IO sites if include_io=False
-                if not include_io and site_name in self.fixed_insts:
-                    continue
-                coordinates.append(instance_coords[site_name])
-            else:
-                # print(f"Warning: site {site_name} not found in instance coordinates for net {net_name}")
-                pass
-
-        if len(coordinates) < 2:
-            return 0.0, {}
-
-        return self._calculate_hpwl_from_coordinates(coordinates)
-
-    # def _calculate_net_hpwl_from_instance_coords(self, net_name, connected_sites, instance_coords):
+        device_center_x = (min_x + max_x) // 2
+        device_center_y = (min_y + max_y) // 2

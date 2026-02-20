@@ -7,10 +7,8 @@ class Router:
         self.placer = placer
 
     def route_connections(self, connect_matrix, all_coords):
-        if isinstance(connect_matrix, torch.Tensor):
-            J = connect_matrix.clone().detach().to(dtype=torch.float32, device=all_coords.device)
-        else:
-            J = torch.tensor(connect_matrix, dtype=torch.float32, device=all_coords.device)
+        J = torch.tensor(connect_matrix, dtype=torch.float32, 
+                device=all_coords.device)
         rows, cols = torch.nonzero(J, as_tuple=True)
 
         routes = []

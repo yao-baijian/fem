@@ -1,33 +1,75 @@
-# 设置项目参数
-# set rtl_file ../benchmarks/ISCAS85/c1355/c1355.v
-# set top_module {c1355}
-# set part_name {xcvu065-ffvc1517-1-i}
-# set output_dir {output_dir}
+# 定义目标列表
+set benchmarks {
+    c880 C:\\Project\\Benchmarks\\ISCAS85\\c880.v
+    c1355 C:\\Project\\Benchmarks\\ISCAS85\\c1355.v
+    c2670 C:\\Project\\Benchmarks\\ISCAS85\\c2670.v
+    c5315 C:\\Project\\Benchmarks\\ISCAS85\\c5315.v
+    c6288 C:\\Project\\Benchmarks\\ISCAS85\\c6288.v
+    c7552 C:\\Project\\Benchmarks\\ISCAS85\\c7552.v
+    s713 C:\\Project\\Benchmarks\\ISCAS89\\s713.v
+    s1238 C:\\Project\\Benchmarks\\ISCAS89\\s1238.v
+    s1488 C:\\Project\\Benchmarks\\ISCAS89\\s1488.v
+    s5378 C:\\Project\\Benchmarks\\ISCAS89\\s5378.v
+    s9234 C:\\Project\\Benchmarks\\ISCAS89\\s9234.v
+    s15850 C:\\Project\\Benchmarks\\ISCAS89\\s15850.v
+}
 
-# set rtl_file ../benchmarks/ISCAS85/c1908/c1908.v
-# set top_module {c1908}
-# set part_name {xcvu065-ffvc1517-1-i}
-# set output_dir {output_dir}
 
-set rtl_file ../benchmarks/ISCAS89/s15850.v
-set top_module {s15850}
+
 set part_name {xcvu065-ffvc1517-1-i}
-set output_dir {output_dir}
+set base_output_dir {output_dir}
 
-create_project -part $part_name -force temp_project ./temp_project
-add_files -norecurse $rtl_file
-set_property top $top_module [current_fileset]
-synth_design -top $top_module -part $part_name -flatten_hierarchy rebuilt
-write_checkpoint -force $output_dir/post_synth.dcp
-opt_design
-place_design
-route_design
-write_checkpoint -force $output_dir/post_impl.dcp
+# 为每个目标单独处理
+foreach {top_module rtl_file} $benchmarks {
+    puts "========================================"
+    puts "Processing benchmark: $top_module"
+    puts "========================================"
+    
+    # 为每个目标创建独立的输出目录
+    set output_dir [file join $base_output_dir $top_module]
+    puts "Creating output directory: $output_dir"
+    file mkdir $output_dir
+    
+    # 创建独立的临时项目目录
+    set temp_project_dir [file join ./temp_projects $top_module]
+    file mkdir $temp_project_dir
+    
+    # 创建项目
+    create_project -part $part_name -force $top_module $temp_project_dir
+    add_files -norecurse $rtl_file
+    set_property top $top_module [current_fileset]
+    
+    # 综合
+    puts "Running synthesis for $top_module..."
+    synth_design -top $top_module -part $part_name -flatten_hierarchy rebuilt
+    write_checkpoint -force [file join $output_dir post_synth.dcp]
+    
+    # 优化
+    puts "Running optimization for $top_module..."
+    opt_design
+    
+    # 布局
+    puts "Running placement for $top_module..."
+    place_design
+    
+    # 布线
+    puts "Running routing for $top_module..."
+    route_design
+    write_checkpoint -force [file join $output_dir post_impl.dcp]
+    
+    # 生成报告
+    puts "Generating reports for $top_module..."
+    report_timing_summary -file [file join $output_dir timing_summary.rpt] -delay_type min_max
+    report_design_analysis -file [file join $output_dir placement_analysis.rpt] -name placement_analysis
+    report_route_status -file [file join $output_dir route_status.rpt]
+    
+    puts "Completed processing $top_module"
+    puts ""
+    
+    # 关闭当前项目，准备下一个
+    close_project
+}
 
-
-report_timing_summary -file $output_dir/timing_summary.rpt -delay_type min_max
-report_design_analysis -file $output_dir/placement_analysis.rpt -name placement_analysis
-report_route_status -file $output_dir/route_status.rpt
 # report_timing_violations -file $output_dir/timing_violations.rpt
 # report_clock_utilization -file $output_dir/clock_utilization.rpt
 # report_design_analysis -wire_length -file $output_dir/wire_length_analysis.rpt

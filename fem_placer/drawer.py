@@ -38,9 +38,6 @@ class PlacementDrawer:
         self.figs = None
         self.axes = None
 
-        # Initialize placement history for tracking optimization progress
-        self.placement_history = []
-
         if debug_mode:
             self._init_debug_interface()
 
@@ -78,16 +75,16 @@ class PlacementDrawer:
 
     def _normalize_coords(self, x, y):
         return x + self.offset_x, y + self.offset_y
-
+    
     def _get_grid_for_position(self, x, y):
         real_x, real_y = x - self.offset_x, y - self.offset_y
 
         if self.logic_grid.is_within_bounds(real_x, real_y):
             return 'logic'
-
+        
         if self.io_grid and self.io_grid.is_within_bounds(real_x, real_y):
             return 'io'
-
+        
         return None
 
     def setup_plot(self, ax):
@@ -292,7 +289,7 @@ class PlacementDrawer:
 
     def draw_multi_step_placement(self, save_path=None):
         step_labels = ['250', '500', '750', '1000']
-        placement_history = self.placement_history
+        placement_history = get_placement_history()
         # Create figure with subplots
         num_plots = len(step_labels)
         self.figs = plt.figure(figsize=(5 * num_plots, 5))
@@ -301,7 +298,7 @@ class PlacementDrawer:
         for plot_idx, step_label in enumerate(step_labels):
             ax = self.figs.add_subplot(1, num_plots, plot_idx + 1)
             self.axes.append(ax)
-            site_coords = placement_history[plot_idx]['site_coords']
+            site_coords = placement_history[plot_idx][0]
             # Setup plot
 
             real_logic_coords = self.logic_grid.to_real_coords_tensor(site_coords)
@@ -314,8 +311,8 @@ class PlacementDrawer:
         self.figs.canvas.draw()
         plt.show(block=False)
         plt.pause(5)
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
     def plot_fpga_placement_loss(self, save_path=None):
         loss_data = get_loss_history()

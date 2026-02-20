@@ -3,7 +3,7 @@ from .model import load_model
 from .dataset import FIELDNAMES
 import numpy as np
 
-_PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "hpwl_after", "overlap_after", "instance")]
+_PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "hpwl_after", "overlap_after")]
 
 def predict_alpha(feature_row: Dict[str, Any]):
     model = load_model()

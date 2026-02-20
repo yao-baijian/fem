@@ -1,304 +1,296 @@
-"""
-Grid class for FPGA placement.
-Manages placement state and provides grid operations for legalizer and drawer.
-"""
-
 import torch
-from typing import Dict, List, Tuple, Optional, Any
+import heapq
+import bisect
+from typing import List, Dict, Tuple, Optional, Set
+from dataclasses import dataclass, field
+from .logger import INFO, WARNING, ERROR
 
-
+@dataclass
 class Grid:
-    """Grid class for managing placement state on a 2D grid."""
+    name: str
+    start_x: int = 0
+    start_y: int = 0
+    area_length: int = 0
+    area_width: int = 0
+    device: str = 'cpu'
+    
+    _grid: List[List[List[int]]] = field(default_factory=list)
+    _instance_positions: Dict[int, Tuple[int, int]] = field(default_factory=dict)
+    _empty_positions: List[Tuple[int, int]] = field(default_factory=list) 
+    
+    @property
+    def end_x(self) -> int:
+        return self.start_x + self.area_length
+    
+    @property
+    def end_y(self) -> int:
+        return self.start_y + self.area_width
+    
+    @property
+    def center_x(self) -> int:
+        return (self.start_x + self.end_x) // 2
+    
+    @property
+    def center_y(self) -> int:
+        return (self.start_y + self.end_y) // 2
+    
+    @property
+    def width(self) -> int:
+        return self.area_length
+    
+    @property
+    def height(self) -> int:
+        return self.area_width
+    
+    @property
+    def area(self) -> int:
+        return self.area_length * self.area_width
 
-    def __init__(self, name: str, bbox_dict: Dict[str, Any]):
-        """
-        Initialize grid from bounding box dictionary.
+    def __post_init__(self):
+        self._grid = [[[] for _ in range(self.area_width)] for _ in range(self.area_length)]
+        for x in range(self.start_x, self.end_x + 1):
+            for y in range(self.start_y, self.end_y + 1):
+                if self.is_position_empty(x, y):
+                    self._empty_positions.append((x, y))
+        self._empty_positions.sort()
 
-        Args:
-            name: Grid identifier (e.g., 'logic', 'io')
-            bbox_dict: Dictionary containing grid bounds with keys:
-                start_x, end_x, start_y, end_y, area_length, area_width
-        """
-        self.name = name
-        self.start_x = bbox_dict.get('start_x', 0)
-        self.end_x = bbox_dict.get('end_x', 0)
-        self.start_y = bbox_dict.get('start_y', 0)
-        self.end_y = bbox_dict.get('end_y', 0)
-        self.area_length = bbox_dict.get('area_length', self.end_x - self.start_x + 1)
-        self.area_width = bbox_dict.get('area_width', self.end_y - self.start_y + 1)
+    def _position_to_key(self, x: int, y: int) -> int:
+        return x * 10000 + y  # 假设y不会超过10000
 
-        # Track placement state: {(x, y): [instance_ids]}
-        self.grid_state: Dict[Tuple[int, int], List[int]] = {}
-        # Track instance positions: {instance_id: (x, y)}
-        self._instance_positions: Dict[int, Tuple[int, int]] = {}
+    def find_empty_positions_nearby(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        result = []
+        target_key = self._position_to_key(start_x, start_y)
+        pos = bisect.bisect_left(self._empty_positions, (start_x, start_y))
+        left = pos - 1
+        right = pos
+        
+        while len(result) < needed_count and (left >= 0 or right < len(self._empty_positions)):
+            left_dist = float('inf')
+            right_dist = float('inf')
+            
+            if left >= 0:
+                left_x, left_y = self._empty_positions[left]
+                left_dist = abs(left_x - start_x) + abs(left_y - start_y)
 
+            if right < len(self._empty_positions):
+                right_x, right_y = self._empty_positions[right]
+                right_dist = abs(right_x - start_x) + abs(right_y - start_y)
+            
+            if left_dist <= right_dist:
+                x, y = self._empty_positions[left]
+                if (x, y) != (start_x, start_y):  # 排除当前位置
+                    result.append((x, y, left_dist))
+                left -= 1
+            else:
+                x, y = self._empty_positions[right]
+                if (x, y) != (start_x, start_y):  # 排除当前位置
+                    result.append((x, y, right_dist))
+                right += 1
+        
+        return result
+    
+    def update_empty_on_place(self, x: int, y: int):
+        pos = (x, y)
+        if pos in self._empty_positions:
+            idx = bisect.bisect_left(self._empty_positions, pos)
+            if idx < len(self._empty_positions) and self._empty_positions[idx] == pos:
+                del self._empty_positions[idx]
+    
+    def update_empty_on_remove(self, x: int, y: int):
+        if self.is_position_empty(x, y):
+            pos = (x, y)
+            if pos not in self._empty_positions:
+                bisect.insort(self._empty_positions, pos)
+
+    def to_grid_coords(self, real_x: int, real_y: int) -> Tuple[int, int]:
+        grid_x = real_x - self.start_x
+        grid_y = real_y - self.start_y
+        return grid_x, grid_y
+    
+    def to_real_coords(self, grid_x: int, grid_y: int) -> Tuple[int, int]:
+        real_x = grid_x + self.start_x
+        real_y = grid_y + self.start_y
+        return real_x, real_y
+    
+    def to_real_coords_tensor(self, coord_tensor: torch.Tensor) -> torch.Tensor:
+        return coord_tensor + torch.tensor([self.start_x, self.start_y], device=coord_tensor.device)
+    
     def is_within_bounds(self, x: int, y: int) -> bool:
-        """Check if coordinates are within grid bounds."""
-        return (self.start_x <= x <= self.end_x and
-                self.start_y <= y <= self.end_y)
-
-    def clear_all(self) -> None:
-        """Clear all placements from grid."""
-        self.grid_state = {}
-        self._instance_positions = {}
-
-    def is_position_empty(self, x: int, y: int) -> bool:
-        """Check if position is empty."""
-        return (x, y) not in self.grid_state or len(self.grid_state[(x, y)]) == 0
-
-    def place_instance(self, instance_id: int, x: int, y: int, force: bool = False) -> bool:
-        """
-        Place an instance at given coordinates.
-
-        Args:
-            instance_id: Instance identifier
-            x, y: Target coordinates
-            force: If True, replace existing instance; if False, append
-
-        Returns:
-            True if position was empty, False if there was a conflict
-        """
-        if not self.is_within_bounds(x, y):
+        return (self.start_x <= x < self.end_x and 
+                self.start_y <= y < self.end_y)
+    
+    def place_instance(self, instance_id: int, x: int, y: int, force=False) -> bool:
+        self.remove_instance(instance_id)
+        grid_x, grid_y = self.to_grid_coords(x, y)
+        
+        if not (0 <= grid_x < self.area_length and 0 <= grid_y < self.area_width):
             return False
-
-        # Remove from old position if exists
-        if instance_id in self._instance_positions:
-            old_pos = self._instance_positions[instance_id]
-            if old_pos in self.grid_state and instance_id in self.grid_state[old_pos]:
-                self.grid_state[old_pos].remove(instance_id)
-                if not self.grid_state[old_pos]:
-                    del self.grid_state[old_pos]
-
-        # Place at new position
-        if (x, y) not in self.grid_state:
-            self.grid_state[(x, y)] = []
-
-        was_empty = len(self.grid_state[(x, y)]) == 0
-
-        if force:
-            self.grid_state[(x, y)] = [instance_id]
-        else:
-            if instance_id not in self.grid_state[(x, y)]:
-                self.grid_state[(x, y)].append(instance_id)
-
+        
+        self._grid[grid_x][grid_y].append(instance_id)
         self._instance_positions[instance_id] = (x, y)
-        return was_empty
-
-    def get_position_occupants(self, x: int, y: int) -> List[int]:
-        """Get list of instances at position."""
-        return self.grid_state.get((x, y), []).copy()
-
-    def remove_instance(self, instance_id: int) -> bool:
-        """Remove instance from grid."""
-        if instance_id not in self._instance_positions:
-            return False
-
-        pos = self._instance_positions[instance_id]
-        if pos in self.grid_state and instance_id in self.grid_state[pos]:
-            self.grid_state[pos].remove(instance_id)
-            if not self.grid_state[pos]:
-                del self.grid_state[pos]
-
-        del self._instance_positions[instance_id]
+        self.update_empty_on_place(x, y)
         return True
-
-    def get_instance_position(self, instance_id: int) -> Optional[Tuple[int, int]]:
-        """
-        Get position of an instance.
-
-        Args:
-            instance_id: Instance identifier
-
-        Returns:
-            (x, y) tuple or None if instance not found
-        """
-        return self._instance_positions.get(instance_id)
-
-    def move_instance(self, instance_id: int, target_x: int, target_y: int,
-                      swap_allowed: bool = True) -> Tuple[bool, Optional[int], Optional[Tuple[int, int]]]:
-        """
-        Move an instance to a new position.
-
-        Args:
-            instance_id: Instance to move
-            target_x, target_y: Target coordinates
-            swap_allowed: If True and target is occupied by single instance, swap positions
-
-        Returns:
-            (success, swapped_instance_id, old_position)
-            - success: Whether move was successful
-            - swapped_instance_id: ID of instance that was swapped (if any)
-            - old_position: Original position of the moved instance
-        """
-        if not self.is_within_bounds(target_x, target_y):
-            return False, None, None
-
+    
+    def move_instance(self, instance_id: int, new_x: int, new_y: int, 
+                     swap_allowed=False) -> Tuple[bool, Optional[int], Tuple[int, int]]:
         if instance_id not in self._instance_positions:
-            return False, None, None
+            ERROR(f'{instance_id} is not in instance position list')
+            return False, None, (None, None)
+        
+        old_x, old_y = self._instance_positions[instance_id]
+        
+        if not self.is_within_bounds(new_x, new_y):
+            return False, None, (old_x, old_y)
+        
+        occupants = self.get_position_occupants(new_x, new_y)
+        
+        if not occupants:
+            self.remove_instance(instance_id)
+            self.place_instance(instance_id, new_x, new_y)
+            return True, None, (old_x, old_y)
+        
+        elif instance_id not in occupants and swap_allowed:
+            other_instance_id = occupants[0]
+            
+            self.remove_instance(instance_id)
+            self.remove_instance(other_instance_id)
+            
+            self.place_instance(instance_id, new_x, new_y)
+            self.place_instance(other_instance_id, old_x, old_y)
+            
+            return True, other_instance_id, (old_x, old_y)
+        
+        return False, None, (old_x, old_y)
+    
+    def remove_instance(self, instance_id: int):
+        if instance_id in self._instance_positions:
+            x, y = self._instance_positions[instance_id]
+            grid_x, grid_y = self.to_grid_coords(x, y)
 
-        old_pos = self._instance_positions[instance_id]
-        target_pos = (target_x, target_y)
-
-        # If target is same as current, nothing to do
-        if old_pos == target_pos:
-            return True, None, old_pos
-
-        # Check target position
-        target_occupants = self.get_position_occupants(target_x, target_y)
-
-        if len(target_occupants) == 0:
-            # Target is empty, simple move
-            self.place_instance(instance_id, target_x, target_y)
-            return True, None, old_pos
-
-        elif len(target_occupants) == 1 and swap_allowed:
-            # Single occupant, try to swap
-            other_id = target_occupants[0]
-
-            # Remove both from their positions
-            self.grid_state[old_pos].remove(instance_id)
-            if not self.grid_state[old_pos]:
-                del self.grid_state[old_pos]
-            self.grid_state[target_pos].remove(other_id)
-            if not self.grid_state[target_pos]:
-                del self.grid_state[target_pos]
-
-            # Place at swapped positions
-            if old_pos not in self.grid_state:
-                self.grid_state[old_pos] = []
-            self.grid_state[old_pos].append(other_id)
-            self._instance_positions[other_id] = old_pos
-
-            if target_pos not in self.grid_state:
-                self.grid_state[target_pos] = []
-            self.grid_state[target_pos].append(instance_id)
-            self._instance_positions[instance_id] = target_pos
-
-            return True, other_id, old_pos
-        else:
-            # Target has multiple occupants or swap not allowed
-            return False, None, None
-
+            if instance_id in self._grid[grid_x][grid_y]:
+                self._grid[grid_x][grid_y].remove(instance_id)
+                del self._instance_positions[instance_id]
+                self.update_empty_on_remove(x, y)
+            
+    def find_nearest_empty(self, x: int, y: int, max_radius=10, k=5) -> List[Tuple[int, int, int]]:
+        heap = []
+        visited = set()
+        grid_x, grid_y = self.to_grid_coords(x, y)
+        queue = [(grid_x, grid_y, 0)]
+        
+        while queue and len(heap) < k:
+            cx, cy, dist = queue.pop(0)
+            
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            
+            real_x, real_y = self.to_real_coords(cx, cy)
+            if self.is_within_bounds(real_x, real_y) and not self._grid[cx][cy]:
+                heapq.heappush(heap, (dist, real_x, real_y))
+            
+            if dist >= max_radius:
+                continue
+            
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) not in visited:
+                    queue.append((nx, ny, dist + 1))
+        
+        return [(cx, cy, dist) for (dist, cx, cy) in heap]
+    
     def find_empty_positions_in_radius(self, x: int, y: int, radius: int) -> List[Tuple[int, int, int]]:
-        """
-        Find empty positions within a given radius.
-
-        Args:
-            x, y: Center coordinates
-            radius: Search radius (Manhattan distance)
-
-        Returns:
-            List of (x, y, distance) tuples for empty positions, sorted by distance
-        """
-        candidates = []
-
+        empty_positions = []
+        grid_x, grid_y = self.to_grid_coords(x, y)
+        
         for dx in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
-                distance = abs(dx) + abs(dy)
-                if distance == 0 or distance > radius:
+                if dx == 0 and dy == 0:
                     continue
-
-                new_x, new_y = x + dx, y + dy
-                if self.is_within_bounds(new_x, new_y) and self.is_position_empty(new_x, new_y):
-                    candidates.append((new_x, new_y, distance))
-
-        return sorted(candidates, key=lambda c: c[2])
-
-    def find_nearest_empty(self, x: int, y: int, max_radius: int = 10, k: int = 5) -> List[Tuple[int, int, int]]:
-        """
-        Find k nearest empty positions.
-
-        Args:
-            x, y: Center coordinates
-            max_radius: Maximum search radius
-            k: Number of positions to find
-
-        Returns:
-            List of (x, y, distance) tuples for empty positions
-        """
-        candidates = []
-        for r in range(1, max_radius + 1):
-            radius_empty = self.find_empty_positions_in_radius(x, y, r)
-            for pos in radius_empty:
-                if pos not in candidates:
-                    candidates.append(pos)
-            if len(candidates) >= k:
-                break
-        return sorted(candidates, key=lambda c: c[2])[:k]
-
-    def from_coords_tensor(self, coords: torch.Tensor,
-                          instance_ids: Optional[torch.Tensor] = None,
-                          clear_existing: bool = True) -> None:
-        """
-        Load placements from coordinate tensor.
-
-        Args:
-            coords: Coordinate tensor [num_instances, 2]
-            instance_ids: Optional tensor of instance IDs [num_instances]
-            clear_existing: Whether to clear existing placements first
-        """
-        from .logger import WARNING
-
-        if clear_existing:
-            self.clear_all()
-
-        num_instances = coords.shape[0]
-        placed_count = 0
-        out_of_bounds_count = 0
-
-        for i in range(num_instances):
-            x = int(coords[i][0].item()) if torch.is_tensor(coords[i][0]) else int(coords[i][0])
-            y = int(coords[i][1].item()) if torch.is_tensor(coords[i][1]) else int(coords[i][1])
-
-            if instance_ids is not None:
-                instance_id = int(instance_ids[i].item()) if torch.is_tensor(instance_ids[i]) else int(instance_ids[i])
-            else:
-                instance_id = i
-
-            success = self.place_instance(instance_id, x, y, force=False)
-            if success or (x, y) in self.grid_state:
-                placed_count += 1
-            else:
-                out_of_bounds_count += 1
-
-        if out_of_bounds_count > 0:
-            WARNING(f"Grid '{self.name}': {out_of_bounds_count}/{num_instances} instances out of bounds (range: x=[{self.start_x},{self.end_x}], y=[{self.start_y},{self.end_y}])")
-
-    def to_coords_tensor(self, num_instances: int, device: str = 'cpu') -> torch.Tensor:
-        """
-        Export placements to coordinate tensor.
-
-        Args:
-            num_instances: Expected number of instances
-            device: Torch device for output tensor
-
-        Returns:
-            Coordinate tensor [num_instances, 2]
-        """
-        coords = torch.zeros((num_instances, 2), dtype=torch.float32, device=device)
-
+                    
+                nx, ny = grid_x + dx, grid_y + dy
+                
+                if (0 <= nx < self.area_length and 
+                    0 <= ny < self.area_width and 
+                    not self._grid[nx][ny]): 
+                    
+                    real_x, real_y = self.to_real_coords(nx, ny)
+                    distance = abs(dx) + abs(dy)
+                    empty_positions.append((real_x, real_y, distance))
+        
+        empty_positions.sort(key=lambda pos: pos[2])
+        return empty_positions
+    
+    def get_instance_position(self, instance_id: int) -> Optional[Tuple[int, int]]:
+        return self._instance_positions.get(instance_id)
+    
+    def get_position_occupant(self, x: int, y: int):
+        if self.is_within_bounds(x, y):
+            grid_x, grid_y = self.to_grid_coords(x, y)
+            if self._grid[grid_x][grid_y]:
+                return self._grid[grid_x][grid_y][0] 
+        return -1
+    
+    def get_position_occupants(self, x: int, y: int) -> List[int]:
+        if not self.is_within_bounds(x, y):
+            return []
+        
+        grid_x, grid_y = self.to_grid_coords(x, y)
+        return self._grid[grid_x][grid_y].copy()
+    
+    def is_position_empty(self, x: int, y: int) -> bool:
+        if not self.is_within_bounds(x, y):
+            return False
+        
+        grid_x, grid_y = self.to_grid_coords(x, y)
+        return len(self._grid[grid_x][grid_y]) == 0
+    
+    def get_all_placed_instances(self) -> List[int]:
+        return list(self._instance_positions.keys())
+    
+    def clear_all(self):
+        self._grid = [[[] for _ in range(self.area_width)] 
+                     for _ in range(self.area_length)]
+        self._instance_positions.clear()
+    
+    def to_coords_tensor(self, num_instances: int, dtype=torch.float32) -> torch.Tensor:
+        coords = torch.zeros((num_instances, 2), dtype=dtype, device=self.device)
+        
         for instance_id, (x, y) in self._instance_positions.items():
             if instance_id < num_instances:
-                coords[instance_id, 0] = x
-                coords[instance_id, 1] = y
-
+                coords[instance_id] = torch.tensor([float(x), float(y)], 
+                                                  dtype=dtype, device=self.device)
         return coords
-
-    def to_real_coords_tensor(self, coords: torch.Tensor) -> torch.Tensor:
-        """
-        Convert grid coordinates to real FPGA coordinates.
-
-        Args:
-            coords: Grid coordinates [batch, 2] or [2]
-
-        Returns:
-            Real FPGA coordinates with start_x and start_y offset applied
-        """
-        offset = torch.tensor([self.start_x, self.start_y],
-                             device=coords.device, dtype=coords.dtype)
-        return coords + offset
-
+    
+    def from_coords_tensor(self, coords: torch.Tensor, instance_ids: Optional[torch.Tensor] = None, 
+                          clear_existing=True):
+        if clear_existing:
+            self.clear_all()
+        
+        if instance_ids is None:
+            instance_ids = torch.arange(coords.shape[0], device=self.device)
+        
+        for idx, instance_id in enumerate(instance_ids):
+            x = int(round(coords[idx, 0].item()))
+            y = int(round(coords[idx, 1].item()))
+            
+            if self.is_within_bounds(x, y):
+                self.place_instance(instance_id.item(), x, y)
+            else:
+                WARNING(f"Instance {instance_id.item()} with coords ({x}, {y}) is out of bounds and cannot be placed.")
+    
     @property
     def instance_positions(self) -> Dict[int, Tuple[int, int]]:
-        """Return dict mapping instance_id -> (x, y)."""
         return self._instance_positions.copy()
+    
+    @property
+    def grid_data(self) -> List[List[List[int]]]:
+        return [row[:] for row in self._grid]
+    
+    def __str__(self) -> str:
+        return (f"Grid(name='{self.name}', start=({self.start_x}, {self.start_y}), "
+                f"size={self.area_length}x{self.area_width}, "
+                f"instances={len(self._instance_positions)})")
+    
+    def __repr__(self) -> str:
+        return self.__str__()
