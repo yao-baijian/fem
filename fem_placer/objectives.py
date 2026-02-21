@@ -248,7 +248,7 @@ def get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io,
 # Constraint Loss Functions (QUBO approach)
 # =============================================================================
 
-def get_constraints_loss(p):
+def get_constraints_loss(p, alpha):
     """
     Calculate site usage constraint loss.
 
@@ -260,10 +260,10 @@ def get_constraints_loss(p):
     """
     site_usage = torch.sum(p, dim=1)
     site_constraint = torch.sum(30 * Func.softplus(site_usage - 1)**2, dim=1)
-    return site_constraint
+    return alpha * site_constraint
 
 
-def get_constraints_loss_with_io(p_logic, p_io):
+def get_constraints_loss_with_io(p_logic, p_io, alpha, beta):
     """
     Calculate constraint loss for both logic and IO placements.
 
@@ -282,7 +282,7 @@ def get_constraints_loss_with_io(p_logic, p_io):
     io_site_usage = torch.sum(p_io, dim=1)
     io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
 
-    return logic_constraint + io_constraint
+    return alpha * logic_constraint + beta * io_constraint
 
 
 # =============================================================================
@@ -398,15 +398,14 @@ def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
     """
     global _hpwl_loss_history, _constrain_loss_history, _total_loss_history, _placement_history
 
-    current_hpwl = get_hpwl_loss_qubo(J, p, site_coords_matrix)
-    constrain_loss = get_constraints_loss(p)
+    hpwl = get_hpwl_loss_qubo(J, p, site_coords_matrix)
+    constrain_loss = get_constraints_loss(p, alpha)
 
-    hpwl_val = current_hpwl
-    constrain_val = alpha * constrain_loss
-    total_val = hpwl_val + constrain_val
+    hpwl_val = hpwl
+    total_val = hpwl_val + constrain_loss
 
     _hpwl_loss_history.append(hpwl_val.mean().item())
-    _constrain_loss_history.append(constrain_val.mean().item())
+    _constrain_loss_history.append(constrain_loss.mean().item())
     _total_loss_history.append(total_val.mean().item())
 
     if step in show_steps:
@@ -414,7 +413,7 @@ def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
         inst_coords = get_inst_coords_from_index(inst_indices, area_width)
         _placement_history.append(inst_coords)
 
-    return current_hpwl + alpha * constrain_loss
+    return hpwl + constrain_loss
 
 
 def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords, alpha, beta):
@@ -432,9 +431,9 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
     Returns:
         total_loss: Combined loss [batch_size]
     """
-    current_hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords)
-    constrain_loss = get_constraints_loss_with_io(p_logic, p_io)
-    return current_hpwl + alpha * constrain_loss
+    hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords)
+    constrain_loss = get_constraints_loss_with_io(p_logic, p_io, alpha, beta)
+    return hpwl + constrain_loss
 
 
 # =============================================================================

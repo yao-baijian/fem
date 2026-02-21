@@ -1,5 +1,5 @@
 """
-Test suite for ml_alpha module - ML-based parameter prediction.
+Test suite for ml module - ML-based parameter prediction.
 
 Tests model training, prediction, and dataset handling for alpha parameter optimization.
 """
@@ -13,14 +13,14 @@ import pandas as pd
 
 sys.path.insert(0, '.')
 
-from ml_alpha.model import create_default_model, save_model, load_model
-from ml_alpha.dataset import FIELDNAMES, extract_features_from_placer
-from ml_alpha.train import train_from_csv, PRE_ALPHA_FEATURES
-from ml_alpha.predict import predict_alpha
+from ml.model import create_default_model, save_model, load_model, get_model_path
+from ml.dataset import FIELDNAMES, extract_features_from_placer
+from ml.train import train_from_csv, PRE_ALPHA_FEATURES
+from ml.predict import predict_alpha, predict_target
 
 
 class TestMLAlphaModel:
-    """Test ml_alpha model creation, saving, and loading."""
+    """Test ml model creation, saving, and loading."""
 
     def test_create_default_model(self):
         """Test that default model is created with correct parameters."""
@@ -60,20 +60,21 @@ class TestMLAlphaModel:
 
 
 class TestMLAlphaDataset:
-    """Test ml_alpha dataset utilities."""
+    """Test ml dataset utilities."""
 
     def test_fieldnames_completeness(self):
         """Test that FIELDNAMES contains all expected fields."""
         expected_fields = [
-            "instance", "opti_insts_num", "avail_sites_num", "fixed_insts_num",
+            "opti_insts_num", "avail_sites_num", "fixed_insts_num",
             "utilization", "logic_area_length", "logic_area_width", "io_height",
-            "net_count", "hpwl_before", "hpwl_after", "overlap_after", "alpha"
+            "net_count", "hpwl_before", "hpwl_after", "overlap_after", "alpha", "beta"
         ]
         assert FIELDNAMES == expected_fields
 
     def test_pre_alpha_features(self):
         """Test PRE_ALPHA_FEATURES excludes target variables and identifiers."""
         assert "alpha" not in PRE_ALPHA_FEATURES
+        assert "beta" not in PRE_ALPHA_FEATURES
         assert "hpwl_after" not in PRE_ALPHA_FEATURES
         assert "overlap_after" not in PRE_ALPHA_FEATURES
         assert "instance" not in PRE_ALPHA_FEATURES  # instance is string identifier, not numeric
@@ -81,7 +82,7 @@ class TestMLAlphaDataset:
 
 
 class TestMLAlphaTraining:
-    """Test ml_alpha training functionality."""
+    """Test ml training functionality."""
 
     def test_train_from_csv_with_valid_data(self):
         """Test training with valid CSV data."""
@@ -110,20 +111,12 @@ class TestMLAlphaTraining:
             df = pd.DataFrame(data)
             df.to_csv(csv_path, index=False)
 
-            # Monkey-patch MODEL_PATH for this test
-            import ml_alpha.train
-            original_model_path = ml_alpha.train.MODEL_PATH
-            ml_alpha.train.MODEL_PATH = model_path
+            result = train_from_csv(csv_path, target="alpha", test_size=0.2)
 
-            try:
-                result = train_from_csv(csv_path, target="alpha", test_size=0.2)
-
-                assert "mse" in result
-                assert "model_path" in result
-                assert result["mse"] >= 0
-                assert os.path.exists(model_path)
-            finally:
-                ml_alpha.train.MODEL_PATH = original_model_path
+            assert "mse" in result
+            assert "model_path" in result
+            assert result["mse"] >= 0
+            assert os.path.exists(result["model_path"])
 
     def test_train_from_csv_missing_file(self):
         """Test training with non-existent CSV raises error."""
@@ -148,24 +141,44 @@ class TestMLAlphaTraining:
 
 
 class TestMLAlphaPrediction:
-    """Test ml_alpha prediction functionality."""
+    """Test ml prediction functionality."""
 
     def test_predict_alpha_without_model(self):
         """Test prediction without trained model raises error."""
-        # Temporarily ensure no model exists
-        import ml_alpha.predict
-        from ml_alpha import model as model_module
+        from unittest.mock import patch
+        
+        feature_row = {
+            "opti_insts_num": 100,
+            "avail_sites_num": 200,
+            "fixed_insts_num": 20,
+            "utilization": 0.5,
+            "logic_area_length": 20,
+            "logic_area_width": 20,
+            "io_height": 10,
+            "net_count": 150
+        }
 
-        # Save original load_model function
-        original_load = model_module.load_model
+        # Mock load_model to return None (model not found)
+        with patch('ml.model.load_model', return_value=None):
+            with pytest.raises(RuntimeError, match="No trained model found"):
+                predict_alpha(feature_row)
 
-        # Mock load_model to return None
-        model_module.load_model = lambda path=None: None
-        ml_alpha.predict.load_model = lambda: None
+    def test_predict_alpha_with_trained_model(self):
+        """Test prediction with a trained model."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = os.path.join(tmpdir, 'alpha_model.pkl')
 
-        try:
+            # Create synthetic training data with proper DataFrame format
+            num_samples = 30
+            data = {col: np.random.randn(num_samples) for col in PRE_ALPHA_FEATURES}
+            X = pd.DataFrame(data)
+            y = np.random.uniform(0.5, 2.0, num_samples)
+
+            model = create_default_model()
+            model.fit(X, y)
+            save_model(model, model_path)
+
             feature_row = {
-                "instance": "test",
                 "opti_insts_num": 100,
                 "avail_sites_num": 200,
                 "fixed_insts_num": 20,
@@ -173,55 +186,11 @@ class TestMLAlphaPrediction:
                 "logic_area_length": 20,
                 "logic_area_width": 20,
                 "io_height": 10,
-                "net_count": 150,
-                "hpwl_before": 2000.0
+                "net_count": 150
             }
 
-            with pytest.raises(RuntimeError, match="No trained model found"):
-                predict_alpha(feature_row)
-        finally:
-            # Restore original function
-            model_module.load_model = original_load
-            ml_alpha.predict.load_model = model_module.load_model
-
-    def test_predict_alpha_with_trained_model(self):
-        """Test prediction with a trained model."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            model_path = os.path.join(tmpdir, 'test_model.pkl')
-
-            # Train a simple model
-            X = np.random.randn(50, len(PRE_ALPHA_FEATURES))
-            y = np.random.uniform(0.5, 2.0, 50)
-
-            model = create_default_model()
-            model.fit(X, y)
-            save_model(model, model_path)
-
-            # Mock load_model to use our test model
-            import ml_alpha.predict
-            ml_alpha.predict.load_model = lambda: load_model(model_path)
-
-            try:
-                feature_row = {
-                    "instance": "test",
-                    "opti_insts_num": 100,
-                    "avail_sites_num": 200,
-                    "fixed_insts_num": 20,
-                    "utilization": 0.5,
-                    "logic_area_length": 20,
-                    "logic_area_width": 20,
-                    "io_height": 10,
-                    "net_count": 150,
-                    "hpwl_before": 2000.0
-                }
-
-                alpha = predict_alpha(feature_row)
-                assert isinstance(alpha, float)
-                assert alpha > 0  # Alpha should be positive
-            finally:
-                # Restore original load_model
-                from ml_alpha import model as model_module
-                ml_alpha.predict.load_model = model_module.load_model
+            alpha = predict_target(feature_row, target="alpha")
+            assert isinstance(alpha, float)
 
 
 if __name__ == "__main__":

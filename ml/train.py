@@ -4,10 +4,11 @@ import sys
 sys.path.append('.')
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from ml_alpha.model import create_default_model, save_model, MODEL_PATH
-from ml_alpha.dataset import CSV_PATH, FIELDNAMES
+from ml.model import create_default_model, save_model, get_model_path
+from ml.dataset import CSV_PATH, FIELDNAMES
 
-PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "hpwl_after", "overlap_after", "instance")]
+# Feature set for training (excludes alpha, beta, and non-feature columns)
+PRE_ALPHA_FEATURES = [f for f in FIELDNAMES if f not in ("alpha", "beta", "hpwl_after", "overlap_after", "instance")]
 
 def train_from_csv(csv_path: str = None, target: str = "alpha", test_size: float = 0.2):
     p = csv_path or CSV_PATH
@@ -24,8 +25,9 @@ def train_from_csv(csv_path: str = None, target: str = "alpha", test_size: float
     model.fit(X_train, y_train)
     preds = model.predict(X_val)
     mse = mean_squared_error(y_val, preds)
-    save_model(model, MODEL_PATH)
-    return {"mse": mse, "model_path": MODEL_PATH}
+    model_path = get_model_path(target)
+    save_model(model, model_path)
+    return {"mse": mse, "model_path": model_path}
 
 if __name__ == "__main__":
     res = train_from_csv()

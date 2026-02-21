@@ -5,6 +5,11 @@ from typing import Any
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "alpha_model.pkl")
 
+MODEL_PATH_TEMPLATE = os.path.join(os.path.dirname(__file__), "{target}_model.pkl")
+
+def get_model_path(target: str = "alpha"):
+    return MODEL_PATH_TEMPLATE.format(target=target)
+
 def save_model(model: Any, path: str = MODEL_PATH):
     joblib.dump(model, path)
 

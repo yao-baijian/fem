@@ -9,7 +9,6 @@ The package includes 50+ unit tests covering:
 - **Objective functions** (HPWL, constraints)
 - **Optimization algorithms** (FEM, SB solver)
 - **Legalization** (overlap detection and resolution)
-- **Timing analysis** (Timer functionality)
 - **ML components** (parameter prediction)
 - **Integration tests** (complete placement pipeline)
 
@@ -90,27 +89,6 @@ def test_constraints_violated():
 
     # Will have some constraint violation
     assert loss > 0
-```
-
-### tests/test_timer.py
-
-Tests for timing-aware placement.
-
-```python
-def test_timing_based_hpwl():
-    """Test timing-weighted HPWL calculation"""
-    timer = Timer()
-
-    J = torch.randn(10, 10)
-    p = torch.softmax(torch.randn(1, 10, 20), dim=-1)
-    timing_criticality = torch.ones_like(J)
-
-    hpwl = timer.calculate_timing_based_hpwl(
-        J, p, area_width=5, timing_criticality=timing_criticality
-    )
-
-    assert not torch.isnan(hpwl)
-    assert hpwl >= 0
 ```
 
 ### tests/test_fpga_placement.py

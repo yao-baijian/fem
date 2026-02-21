@@ -58,9 +58,19 @@ class Grid:
         return x * 10000 + y  # 假设y不会超过10000
 
     def find_empty_positions_nearby(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        """
+        二分查找最近的空位置，自动延展直到找到足够数量或遍历完所有空位置
+        """
+        if not self._empty_positions:
+            return []
+        
         result = []
-        target_key = self._position_to_key(start_x, start_y)
+        
+        # 二分查找插入位置
+        import bisect
         pos = bisect.bisect_left(self._empty_positions, (start_x, start_y))
+        
+        # 左右指针向两边扩展，直到找到足够数量或遍历完
         left = pos - 1
         right = pos
         
@@ -71,24 +81,25 @@ class Grid:
             if left >= 0:
                 left_x, left_y = self._empty_positions[left]
                 left_dist = abs(left_x - start_x) + abs(left_y - start_y)
-
+            
             if right < len(self._empty_positions):
                 right_x, right_y = self._empty_positions[right]
                 right_dist = abs(right_x - start_x) + abs(right_y - start_y)
             
+            # 选择距离更近的
             if left_dist <= right_dist:
                 x, y = self._empty_positions[left]
-                if (x, y) != (start_x, start_y):  # 排除当前位置
+                if (x, y) != (start_x, start_y):
                     result.append((x, y, left_dist))
                 left -= 1
             else:
                 x, y = self._empty_positions[right]
-                if (x, y) != (start_x, start_y):  # 排除当前位置
+                if (x, y) != (start_x, start_y):
                     result.append((x, y, right_dist))
                 right += 1
         
         return result
-    
+        
     def update_empty_on_place(self, x: int, y: int):
         pos = (x, y)
         if pos in self._empty_positions:

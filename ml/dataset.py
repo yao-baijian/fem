@@ -7,10 +7,11 @@ CSV_PATH = os.path.join(MODULE_DIR, "ml_data.csv")
 FIELDNAMES = [
     "opti_insts_num", "avail_sites_num", "fixed_insts_num", "utilization",
     "logic_area_length", "logic_area_width", "io_height", "net_count",
-    "hpwl_before", "hpwl_after", "overlap_after", "alpha"
+    "hpwl_before", "hpwl_after", "overlap_after", "alpha", "beta"
 ]
 
-def extract_features_from_placer(placer, logic_coords=None, io_coords=None, hpwl_before=None, hpwl_after=None, overlap_after=None, instance: str = '', alpha: float = 0.0) -> Dict[str, Any]:
+
+def extract_features_from_placer(placer, logic_coords=None, io_coords=None, hpwl_before=None, hpwl_after=None, overlap_after=None, instance: str = '', alpha: float = 0.0, beta: float = 0.0) -> Dict[str, Any]:
     logic_grid = placer.get_grid("logic")
     io_grid = placer.get_grid("io")
     net_count = len(placer.net_manager.nets)
@@ -28,7 +29,8 @@ def extract_features_from_placer(placer, logic_coords=None, io_coords=None, hpwl
         "hpwl_before": float(hpwl_before),
         "hpwl_after": float(hpwl_after),
         "overlap_after": int(overlap_after),
-        "alpha": float(alpha)
+        "alpha": float(alpha),
+        "beta": float(beta)
     }
     return row
 

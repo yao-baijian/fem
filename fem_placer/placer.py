@@ -71,10 +71,9 @@ class FpgaPlacer:
         
         self.logic_site_coords = None
         self.site_coords_all = None
-        
         self.device = device
-        
-        constraint_weight = 0
+        self.constraint_alpha = 0
+        self.constraint_beta = 0
         pass
     
     def with_io(self):
@@ -83,7 +82,10 @@ class FpgaPlacer:
         return False
     
     def set_alpha(self, alpha):
-        self.constraint_weight = alpha
+        self.constraint_alpha = alpha
+        
+    def set_beta(self, beta):
+        self.constraint_beta = beta
     
     def get_grid(self, grid_name) -> Grid:
         return self.grids[grid_name]
@@ -240,7 +242,7 @@ class FpgaPlacer:
         self.fixed_insts_num = len(self.fixed_insts)
         self.other_insts_num = self.total_insts_num - (self.opti_insts_num + self.fixed_insts_num)
         
-        self.constraint_weight = self.opti_insts_num / 2
+        self.constraint_alpha = self.opti_insts_num / 2
 
         INFO(f"Sites stat: {self.opti_insts_num} slice sites, {self.fixed_insts_num} fixed sites, {self.other_insts_num} other sites, total {self.total_insts_num} sites.")
         

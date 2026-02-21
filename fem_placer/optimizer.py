@@ -2,7 +2,6 @@ import torch
 from math import log
 from typing import Tuple
 from .objectives import *
-from .drawer import PlacementDrawer
 
 
 def entropy_q(p):
@@ -38,7 +37,8 @@ class FPGAPlacementOptimizer:
             site_coords_matrix: torch.Tensor,
             io_site_connect_matrix: torch.Tensor = None,
             io_site_coords: torch.Tensor = None,
-            constraint_weight: float = 1.0,
+            constraint_alpha: float = 1.0,
+            constraint_beta: float = 1.0,
             num_trials: int = 10,
             num_steps: int = 1000,
             dev: str = 'cpu',
@@ -63,7 +63,7 @@ class FPGAPlacementOptimizer:
             site_coords_matrix: Site coordinates [num_site, 2]
             drawer: Optional PlacementDrawer for visualization
             visualization_steps: Steps at which to visualize
-            constraint_weight: Weight for constraint loss (alpha parameter)
+            constraint_alpha: Weight for constraint loss (alpha parameter)
         """
         self.num_inst = num_inst
         self.fixed_insts_num = num_fixed_inst
@@ -74,7 +74,8 @@ class FPGAPlacementOptimizer:
         self.io_site_coords = io_site_coords
         # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor 
         self.bbox_length = bbox_length    
-        self.constraint_weight = constraint_weight
+        self.constraint_alpha = constraint_alpha
+        self.constraint_beta = constraint_beta
         
         self.num_trials = num_trials
         self.num_steps = num_steps
@@ -149,7 +150,7 @@ class FPGAPlacementOptimizer:
 
             loss = expected_fpga_placement(
                 self.coupling_matrix, p, self.site_coords_matrix,
-                step, area_width, self.constraint_weight
+                step, area_width, self.constraint_alpha
             )
 
             free_energy = loss - entropy_q(p) / self.betas[step]
@@ -168,7 +169,7 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement_with_io(
-                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_weight, 0)
+                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_alpha, self.constraint_beta)
 
             free_energy = loss - (entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step]
             free_energy.backward(gradient=torch.ones_like(free_energy))

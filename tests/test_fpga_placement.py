@@ -17,8 +17,8 @@ from fem_placer import (
 )
 from fem_placer.logger import *
 from fem_placer.config import *
-from ml_alpha.dataset import *
-from ml_alpha.predict import predict_alpha
+from ml.dataset import *
+from ml.predict import predict_alpha
 
 SET_LEVEL('INFO')
 
@@ -29,14 +29,14 @@ draw_evolution = False
 draw_loss_function = False
 draw_final_placement = False
 num_trials = 10
-num_steps = 2000
+num_steps = 200
 dev = 'cuda'
 manual_grad = False
 anneal='inverse'
 case_type = 'fpga_placement'
 
 for instance in instances:
-    place_type = PlaceType.IO
+    place_type = PlaceType.CENTERED
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
                             GridType.SQUARE,
@@ -62,7 +62,8 @@ for instance in instances:
         io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
         io_site_coords=fpga_placer.io_site_coords,
         bbox_length = fpga_placer.grids['logic'].area_length,
-        constraint_weight=1.0,
+        constraint_alpha=fpga_placer.constraint_alpha,
+        constraint_beta=fpga_placer.constraint_alpha,  # For IO placements, beta is set separately
         num_trials=num_trials,
         num_steps=num_steps,
         dev=dev,

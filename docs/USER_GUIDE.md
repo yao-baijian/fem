@@ -362,98 +362,6 @@ configs, energies = optimizer.optimize(
 legalizer = Legalizer(placer=placer, device=device)
 ```
 
-### Timing-Aware Placement
-
-Use the Timer class for timing-critical designs:
-
-```python
-from fem_placer import Timer
-import torch
-
-# Create timer
-timer = Timer()
-
-# Setup timing analysis (if you have timing data)
-# timer.setup_timing_analysis(design, timing_library)
-
-# Create timing criticality weights
-# Higher values = more critical paths
-timing_criticality = torch.ones(num_inst, num_inst)
-timing_criticality[critical_path_nets] *= 10.0
-
-# Calculate timing-aware HPWL
-timing_hpwl = timer.calculate_timing_based_hpwl(
-    J=J,
-    p=best_config,
-    area_width=area_length,
-    timing_criticality=timing_criticality
-)
-
-print(f"Timing-weighted HPWL: {timing_hpwl:.2f}")
-```
-
-### Congestion-Aware Placement
-
-Avoid congested regions:
-
-```python
-from fem_placer import Timer
-
-timer = Timer()
-
-# Create congestion map (penalty per site)
-congestion_map = torch.ones(num_site)
-# Mark congested regions with higher penalties
-congested_sites = [10, 11, 12, 20, 21, 22]
-congestion_map[congested_sites] = 10.0
-
-# Calculate congestion-aware HPWL
-congestion_hpwl = timer.calculate_congestion_aware_hpwl(
-    J=J,
-    p=best_config,
-    area_width=area_length,
-    congestion_map=congestion_map
-)
-```
-
-### Hypergraph Partitioning
-
-For hierarchical placement or partitioning:
-
-```python
-from fem_placer import (
-    expected_hyperbmincut,
-    balance_constrain,
-    infer_hyperbmincut
-)
-
-# Define hyperedges (nets connecting multiple instances)
-hyperedges = [
-    [0, 1, 2],      # Net connecting instances 0, 1, 2
-    [1, 3, 4],      # Net connecting instances 1, 3, 4
-    [2, 4, 5, 6]    # Net connecting instances 2, 4, 5, 6
-]
-
-# Create partition probabilities (2 partitions)
-p_partition = torch.rand(1, num_inst, 2)
-p_partition = torch.softmax(p_partition, dim=-1)
-
-# Calculate expected cut
-cut_value = expected_hyperbmincut(J, p_partition, hyperedges)
-
-# Add balance constraint (40-60% split)
-balance_loss = balance_constrain(J, p_partition, U_max=0.6, L_min=0.4)
-
-# Total objective
-total_loss = cut_value + balance_loss
-
-# Infer final partition
-partition, final_cut = infer_hyperbmincut(J, p_partition, hyperedges)
-print(f"Partition A: {(partition == 0).sum()} instances")
-print(f"Partition B: {(partition == 1).sum()} instances")
-print(f"Cut edges: {final_cut}")
-```
-
 ### Multi-Step Visualization
 
 Track optimization progress:
@@ -570,25 +478,7 @@ placement, _, _, hpwl = legalizer.legalize_placement(real_coords, torch.arange(n
 print(f"GPU-accelerated HPWL: {hpwl['hpwl_no_io']:.2f}")
 ```
 
-### Example 3: Timing-Aware Placement
-
-```python
-from fem_placer import Timer
-
-# ... (setup as in Example 1)
-
-timer = Timer()
-timing_criticality = torch.ones(num_inst, num_inst)
-# Mark critical paths with higher weights
-timing_criticality[critical_nets] = 10.0
-
-timing_hpwl = timer.calculate_timing_based_hpwl(
-    J, configs[best_idx], area_length, timing_criticality
-)
-print(f"Timing-weighted HPWL: {timing_hpwl:.2f}")
-```
-
-### Example 4: Comparing Multiple Solutions
+### Example 3: Comparing Multiple Solutions
 
 ```python
 # Run multiple trials
