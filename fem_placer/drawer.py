@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.cm as cm
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 from .grid import Grid
 from .logger import WARNING
 from .objectives import get_loss_history, get_placement_history
@@ -41,7 +42,7 @@ class PlacementDrawer:
         if debug_mode:
             self._init_debug_interface()
 
-        plt.rcParams['font.family'] = 'Calibri'
+        plt.rcParams['font.family'] = 'Linux Libertine'
         plt.rcParams['font.size'] = 12
         plt.rcParams['axes.linewidth'] = 0.8
         plt.rcParams['axes.edgecolor'] = "#C9C4C4"
@@ -314,25 +315,93 @@ class PlacementDrawer:
 
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
-    def plot_fpga_placement_loss(self, save_path=None):
+    def plot_fpga_placement_loss(self, save_path=None, sigma=1.5):
+        """
+        Plot FPGA placement loss with Gaussian smoothing.
+        
+        Args:
+            save_path: Path to save the figure
+            sigma: Standard deviation for Gaussian filter (default: 1.5)
+        """
         loss_data = get_loss_history()
-        steps = list(range(len(loss_data['hpwl_losses'])))
+        steps = np.array(list(range(len(loss_data['hpwl_losses']))))
+        
+        # Convert loss data to numpy arrays
+        hpwl_losses = np.array(loss_data['hpwl_losses'])
+        constrain_losses = np.array(loss_data['constrain_losses'])
+        total_losses = np.array(loss_data['total_losses'])
+        
+        # Apply Gaussian filter for smoothing
+        hpwl_smooth = gaussian_filter1d(hpwl_losses, sigma=sigma)
+        constrain_smooth = gaussian_filter1d(constrain_losses, sigma=sigma)
+        total_smooth = gaussian_filter1d(total_losses, sigma=sigma)
+        
         colors = ["#53D5F9", "#86FAD8", "#DF6FFA"]
 
-        fig, ax = plt.subplots(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(10, 6))
 
-        ax.plot(steps, loss_data['hpwl_losses'],
-                color=colors[0], linewidth=2, label='HPWL Loss')
-        ax.plot(steps, loss_data['constrain_losses'],
-                color=colors[1], linewidth=2, label='Constraint Loss')
-        ax.plot(steps, loss_data['total_losses'],
-                color=colors[2], linewidth=2, label='Total Loss')
+        ax.plot(steps, hpwl_smooth,
+                color=colors[0], linewidth=2.5, label='HPWL Loss')
+        ax.plot(steps, constrain_smooth,
+                color=colors[1], linewidth=2.5, label='Constraint Loss')
+        ax.plot(steps, total_smooth,
+                color=colors[2], linewidth=2.5, label='Total Loss')
 
-        ax.set_xlabel('Step')
-        ax.set_ylabel('Loss')
-        ax.legend()
-        ax.grid(False)
-
+        ax.set_xlabel('Step', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.legend(fontsize=11)
+        
+        # Customize grid with fewer lines
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=5))
+        
+        # Format y-axis with scientific notation (10e format)
+        ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+        
         plt.tight_layout()
-        plt.pause(5)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.pause(2)
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+
+    def plot_annealing_comparison(self, annealing_results, save_path=None):
+        """
+        Plot total loss comparison across different annealing schedules.
+        
+        Args:
+            annealing_results: Dictionary with annealing types as keys and 
+                             loss_history dicts as values
+                             Example: {
+                                 'lin': {'total_losses': [...], ...},
+                                 'exp': {'total_losses': [...], ...},
+                                 'inverse': {'total_losses': [...], ...}
+                             }
+            save_path: Path to save the figure
+        """
+        colors = {'lin': '#FF6B6B', 'exp': '#4ECDC4', 'inverse': '#45B7D1'}
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        for anneal_type, loss_data in annealing_results.items():
+            if 'total_losses' in loss_data:
+                steps = list(range(len(loss_data['total_losses'])))
+                ax.plot(steps, loss_data['total_losses'],
+                        color=colors.get(anneal_type, '#000000'),
+                        linewidth=2.5, label=f'{anneal_type.upper()} Annealing',
+                        marker='o', markersize=3, markevery=max(1, len(steps)//20))
+        
+        ax.set_xlabel('Step', fontsize=12)
+        ax.set_ylabel('Total Loss', fontsize=12)
+        ax.set_title('Total Loss Comparison Across Annealing Schedules', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=11, loc='best')
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        plt.pause(2)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+        
+        plt.show(block=False)

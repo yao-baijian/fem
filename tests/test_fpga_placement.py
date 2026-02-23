@@ -22,15 +22,15 @@ from ml.predict import predict_alpha
 
 SET_LEVEL('INFO')
 
-instances = ['c5315']
+instances = ['c6288']
             # , 'c1355', 'c2670', 'c5315', 'c6288', 'c7552'
             #  's713', 's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
 draw_evolution = False
-draw_loss_function = False
+draw_loss_function = True
 draw_final_placement = False
 num_trials = 10
 num_steps = 200
-dev = 'cuda'
+dev = 'cpu'
 manual_grad = False
 anneal='inverse'
 case_type = 'fpga_placement'
