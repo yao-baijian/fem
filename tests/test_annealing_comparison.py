@@ -29,11 +29,11 @@ SET_LEVEL('INFO')
 INSTANCE = 'c5315'
 NUM_TRIALS = 10
 NUM_STEPS = 200
-DEVICE = 'cuda'
+DEVICE = 'cpu'
 MANUAL_GRAD = False
 ANNEAL_TYPES = ['lin', 'exp', 'inverse']
 DRAW_COMPARISON = True
-SAVE_COMPARISON_PATH = 'annealing_comparison.png'
+SAVE_COMPARISON_PATH = 'result/annealing_comparison.png'
 
 def run_optimization_with_anneal(fpga_placer, instance, anneal_type, num_trials, num_steps, device):
     """

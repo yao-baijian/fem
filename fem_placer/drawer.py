@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.cm as cm
+import matplotlib.font_manager as fm
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from .grid import Grid
@@ -42,7 +43,11 @@ class PlacementDrawer:
         if debug_mode:
             self._init_debug_interface()
 
-        plt.rcParams['font.family'] = 'Linux Libertine'
+        path = '/usr/share/fonts/opentype/linux-libertine/LinLibertine_RI.otf'  
+        prop = fm.FontProperties(fname=path)
+
+        plt.rcParams['font.family'] = prop.get_name()
+
         plt.rcParams['font.size'] = 12
         plt.rcParams['axes.linewidth'] = 0.8
         plt.rcParams['axes.edgecolor'] = "#C9C4C4"
@@ -338,7 +343,7 @@ class PlacementDrawer:
         
         colors = ["#53D5F9", "#86FAD8", "#DF6FFA"]
 
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(4, 4))
 
         ax.plot(steps, hpwl_smooth,
                 color=colors[0], linewidth=2.5, label='HPWL Loss')
@@ -363,7 +368,6 @@ class PlacementDrawer:
         plt.pause(2)
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Figure saved to {save_path}")
 
     def plot_annealing_comparison(self, annealing_results, save_path=None):
         """
@@ -381,7 +385,7 @@ class PlacementDrawer:
         """
         colors = {'lin': '#FF6B6B', 'exp': '#4ECDC4', 'inverse': '#45B7D1'}
         
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(5, 5))
         
         for anneal_type, loss_data in annealing_results.items():
             if 'total_losses' in loss_data:
@@ -393,9 +397,12 @@ class PlacementDrawer:
         
         ax.set_xlabel('Step', fontsize=12)
         ax.set_ylabel('Total Loss', fontsize=12)
-        ax.set_title('Total Loss Comparison Across Annealing Schedules', fontsize=14, fontweight='bold')
+        # ax.set_title('Total Loss Comparison Across Annealing Schedules', fontsize=14, fontweight='bold')
         ax.legend(fontsize=11, loc='best')
         ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Format y-axis with scientific notation (10e format)
+        ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
         
         plt.tight_layout()
         plt.pause(2)

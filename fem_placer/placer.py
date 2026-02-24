@@ -249,7 +249,27 @@ class FpgaPlacer:
         if self.grid_type == GridType.SQUARE:
             area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
             area_height = area_length
+        
+        elif self.grid_type == GridType.RECTAN:
+            # Rectangular grid: consider logic depth from net analysis
+            base_area = self.opti_insts_num / self.utilization_factor
+            logic_depth = self.net_manager.logic_depth
+            
+            # Adjust aspect ratio based on logic depth:
+            # - logic_depth > 1.0: deeper logic -> longer length, shorter width
+            # - logic_depth < 1.0: shallower logic -> shorter length, wider width
+            # Use square root of logic depth for aspect ratio adjustment
+            aspect_ratio = np.sqrt(logic_depth)
+            
+            # Solve: length * width = base_area, length / width = aspect_ratio
+            # => length = sqrt(base_area * aspect_ratio), width = sqrt(base_area / aspect_ratio)
+            area_length = int(np.ceil(np.sqrt(base_area * aspect_ratio)))
+            area_height = int(np.ceil(np.sqrt(base_area / aspect_ratio)))
+            
+            INFO(f"Using RECT grid: logic_depth_factor={logic_depth:.3f}, aspect_ratio={aspect_ratio:.3f}")
+        
         else:
+            # Default fallback
             area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
             area_height = 0
         

@@ -1,6 +1,6 @@
 from typing import Dict, Any
 from .model import load_model, get_model_path
-from .train import PRE_ALPHA_FEATURES
+from .dataset import get_feature_fieldnames
 import pandas as pd
 
 
@@ -10,7 +10,8 @@ def predict_target(feature_row: Dict[str, Any], target: str = "alpha"):
     if model is None:
         raise RuntimeError(f"No trained model found for target '{target}'. Run ml.train.train_from_csv(target='{target}') first.")
     # Use pandas DataFrame to preserve feature names (matches training)
-    x = pd.DataFrame([[feature_row.get(n, 0.0) for n in PRE_ALPHA_FEATURES]], columns=PRE_ALPHA_FEATURES)
+    feature_names = get_feature_fieldnames(with_io=False)
+    x = pd.DataFrame([[feature_row.get(n, 0.0) for n in feature_names]], columns=feature_names)
     val = float(model.predict(x)[0])
     return val
 

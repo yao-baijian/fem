@@ -17,15 +17,17 @@ SET_LEVEL('WARNING')
 
 num_trials = 5
 num_steps = 200
-dev = 'cuda'
+dev = 'cpu'
 manual_grad = False
 anneal='inverse'
 case_type = 'fpga_placement'
 
-# instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-#              's713', 's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+             's713', 's1238', 's1488', 's5378', 's9234', 's15850']
 
-instances = ['c5315']
+# instances = ['FPGA-example1']
+
+# instances = ['c5315']
 
 for instance in instances:
     place_type = PlaceType.CENTERED
@@ -49,12 +51,12 @@ for instance in instances:
 
     # Coarse sweep parameters
     coarse_start = 0
-    coarse_end = 50
+    coarse_end = 100
     coarse_step = 5
 
     # Fine sweep parameters
-    fine_radius = 1.0  # ±1.0 around a1
-    fine_step = 0.1    # 0.1 level granularity
+    fine_radius = 2.0  # ±1.0 around a1
+    fine_step = 0.2    # 0.1 level granularity
     top_k = 5
 
     # Allowed overlap as fraction (e.g., 0.01 = 1%) - prefer solutions whose relative overlap lies inside this range
@@ -62,11 +64,16 @@ for instance in instances:
     overlap_allowed_max = 0.1
 
     def evaluate_alpha(alpha, beta=0):
+        # Clear grid state before each run
+        fpga_placer.grids['logic'].clear_all()
+        if place_type == PlaceType.IO:
+            fpga_placer.grids['io'].clear_all()
+
         fpga_placer.set_alpha(alpha)
         # For IO placements, set beta separately; for CENTERED, beta remains 0
         if place_type == PlaceType.IO:
             fpga_placer.set_beta(beta)
-        
+
         optimizer = FPGAPlacementOptimizer(
             num_inst=fpga_placer.opti_insts_num,
             num_fixed_inst=fpga_placer.fixed_insts_num,
@@ -92,7 +99,7 @@ for instance in instances:
             with_io=(place_type == PlaceType.IO),
             manual_grad=manual_grad
         )
-        
+
         config, result = optimizer.optimize()
         optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
         legalizer = Legalizer(placer=fpga_placer, device=dev)
@@ -168,6 +175,11 @@ for instance in instances:
         print(f"Top{idx}: alpha={r['alpha']} hpwl_before={r['hpwl_initial']:.2f} hpwl_after={r['hpwl_final']:.2f} overlap={r['overlap']} ({r['overlap_percent']:.3f})")
         # For designs with IO, record beta separately (use same constraint value as beta)
         beta_val = r['alpha'] if place_type == PlaceType.IO else 0.0
-        row = extract_features_from_placer(fpga_placer, hpwl_before=r['hpwl_initial'], hpwl_after=r['hpwl_final'], overlap_after=r['overlap'], instance=instance, alpha=r['alpha'], beta=beta_val)
-        append_row(row)
+        row = extract_features_from_placer(
+            fpga_placer,
+            alpha=r['alpha'],
+            beta=beta_val,
+            with_io=(place_type == PlaceType.IO)
+        )
+        append_row(row, with_io=(place_type == PlaceType.IO))
     

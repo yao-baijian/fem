@@ -263,6 +263,12 @@ class Grid:
         self._grid = [[[] for _ in range(self.area_width)] 
                      for _ in range(self.area_length)]
         self._instance_positions.clear()
+        # Reset and repopulate _empty_positions
+        self._empty_positions.clear()
+        for x in range(self.start_x, self.end_x):
+            for y in range(self.start_y, self.end_y):
+                self._empty_positions.append((x, y))
+        self._empty_positions.sort()
     
     def to_coords_tensor(self, num_instances: int, dtype=torch.float32) -> torch.Tensor:
         coords = torch.zeros((num_instances, 2), dtype=dtype, device=self.device)

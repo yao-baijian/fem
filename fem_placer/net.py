@@ -1,5 +1,6 @@
 import torch
 import rapidwright
+import numpy as np
 from typing import Dict, Set, Tuple
 from com.xilinx.rapidwright.design import Design, Net
 from .hpwl import HPWLCalculator
@@ -26,6 +27,7 @@ class NetManager:
         self.net_tensor = None
         self.insts_matrix = None
         self.io_insts_matrix = None
+        self.logic_depth = 1.0  # Store estimated logic depth
 
         self.get_site_inst_id_by_name_func = get_site_inst_id_by_name_func
         self.get_site_inst_name_by_id_func = get_site_inst_name_by_id_func
@@ -51,10 +53,88 @@ class NetManager:
         total_hpwl = hpwl['hpwl']
         total_hpwl_no_io = hpwl['hpwl_no_io']
         INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
+        
+        # Estimate logic depth from the design
+        self._estimate_logic_depth()
+        
         if self.debug:
             self.save_net_debug_info()
 
         return total_hpwl, total_hpwl_no_io
+
+    # Calculate network degree statistics for placer ML
+    def calculate_net_degrees(self) -> tuple[int, float]:
+        """
+        Calculate network degree statistics.
+        Returns:
+            (max_degree, avg_degree)
+        """
+        if not self.nets or len(self.nets) == 0:
+            return 0, 0.0
+        degrees = []
+        for net in self.nets:
+            if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
+                continue
+            pins = net.getPins()  # TODO this needs to be pins in different site
+            degree = len(pins)
+            degrees.append(degree)
+        if not degrees:
+            return 0, 0.0
+        max_degree = max(degrees)
+        avg_degree = sum(degrees) / len(degrees)
+        return max_degree, avg_degree
+
+    def _estimate_logic_depth(self):
+        """
+        Estimate the logic depth of the design by analyzing the netlist.
+        Uses a heuristic based on net connectivity to estimate critical path depth.
+        
+        Stores result in self.logic_depth: ratio > 1.0 means deep logic
+        """
+        try:
+            if not self.nets or len(self.nets) == 0:
+                self.logic_depth = 1.0
+                return
+            
+            # Count connectivity degree per site
+            site_connectivity = {}
+            for net in self.nets:
+                if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
+                    continue
+                
+                pins = net.getPins()
+                sites_in_net = set()
+                
+                for pin in pins:
+                    site_inst = pin.getSiteInst()
+                    if site_inst:
+                        site_name = site_inst.getName()
+                        sites_in_net.add(site_name)
+                
+                # Update connectivity degree
+                for site in sites_in_net:
+                    site_connectivity[site] = site_connectivity.get(site, 0) + len(sites_in_net)
+            
+            # Calculate average connectivity degree
+            if not site_connectivity:
+                self.logic_depth = 1.0
+                return
+            
+            avg_connectivity = sum(site_connectivity.values()) / len(site_connectivity)
+            total_sites = len(site_connectivity)
+            
+            # Heuristic: deep logic has higher connectivity per site and lower site count
+            # depth_factor correlates with (avg_connectivity / sqrt(total_sites))
+            depth_factor = avg_connectivity / max(1.0, np.sqrt(total_sites))
+            
+            # Normalize to a reasonable range [0.5, 2.0]
+            self.logic_depth = min(2.0, max(0.5, depth_factor / 10.0))
+            
+            INFO(f"Estimated logic depth factor: {self.logic_depth:.3f} (avg_connectivity: {avg_connectivity:.2f}, sites: {total_sites})")
+            
+        except Exception as e:
+            WARNING(f"Failed to estimate logic depth: {e}, using default value 1.0")
+            self.logic_depth = 1.0
 
     def analyze_solver_hpwl(self, coords, io_coords=None, include_io=False):
         self.hpwl_calculator.clear()

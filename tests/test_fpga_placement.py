@@ -48,7 +48,11 @@ for instance in instances:
     area_size = fpga_placer.grids['logic'].area
     global_drawer = PlacementDrawer(placer=fpga_placer)
     
-    row = extract_features_from_placer(fpga_placer, hpwl_before=0, hpwl_after=0, overlap_after=0, alpha=0)
+    row = extract_features_from_placer(fpga_placer,
+                                       alpha=0, 
+                                       beta=0, 
+                                       with_io=False)
+    
     alpha = predict_alpha(row)
     INFO(f'instance {instance}, predicted alpha {alpha}')
     fpga_placer.set_alpha(alpha)
@@ -103,10 +107,10 @@ for instance in instances:
             f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl:<12.2f}")
     
     if draw_loss_function:
-        global_drawer.plot_fpga_placement_loss('hpwl_loss.png')
+        global_drawer.plot_fpga_placement_loss('result/hpwl_loss.png')
 
     if draw_evolution:
-        global_drawer.draw_multi_step_placement('placement_evolution.png')
+        global_drawer.draw_multi_step_placement('result/placement_evolution.png')
 
     if draw_final_placement:
         global_drawer.draw_place_and_route(placement_legalized[0], routes, None, False, 1000, title_suffix="Final Placement with Routing")
