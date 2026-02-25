@@ -265,6 +265,9 @@ class FpgaPlacer:
             # => length = sqrt(base_area * aspect_ratio), width = sqrt(base_area / aspect_ratio)
             area_length = int(np.ceil(np.sqrt(base_area * aspect_ratio)))
             area_height = int(np.ceil(np.sqrt(base_area / aspect_ratio)))
+
+            # area_length = 14
+            # area_height = 18
             
             INFO(f"Using RECT grid: logic_depth_factor={logic_depth:.3f}, aspect_ratio={aspect_ratio:.3f}")
         
@@ -293,7 +296,7 @@ class FpgaPlacer:
         num_pins = len(self.fixed_insts)
         
         io_width = 1
-        io_height = num_pins
+        io_height = num_pins + 3
         
         io_start_x = self.grids['logic'].start_x - io_width       
         bbox_center_y = self.grids['logic'].center_y
@@ -449,8 +452,8 @@ class FpgaPlacer:
         place_width = self.grids['logic'].area_width
         
         self.logic_site_coords = self.grids['logic'].to_real_coords_tensor(torch.cartesian_prod(
-            torch.arange(place_width, dtype=torch.float32, device=self.device),
-            torch.arange(place_length, dtype=torch.float32, device=self.device)
+            torch.arange(place_length, dtype=torch.float32, device=self.device),
+            torch.arange(place_width, dtype=torch.float32, device=self.device)
         ))
 
     # def get_site_coords_all(num_locations, area_width):

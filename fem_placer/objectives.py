@@ -52,18 +52,8 @@ def clear_history():
 # =============================================================================
 
 def get_inst_coords_from_index(inst_indices, area_width):
-    """
-    Convert instance indices to coordinates.
-
-    Args:
-        inst_indices: Instance placement indices [batch_size, num_instances]
-        area_width: Width of the placement area
-
-    Returns:
-        coords: Instance coordinates [batch_size, num_instances, 2]
-    """
-    x_coords = inst_indices % area_width
-    y_coords = inst_indices // area_width
+    x_coords = inst_indices // area_width
+    y_coords = inst_indices % area_width
     coords = torch.stack([x_coords, y_coords], dim=2)
     return coords.float()
 
@@ -281,9 +271,17 @@ def get_constraints_loss_with_io(p_logic, p_io, alpha, beta):
     coeff_2 = p_io.shape[1] / 2
     io_site_usage = torch.sum(p_io, dim=1)
     io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
-
     return alpha * logic_constraint + beta * io_constraint
 
+    # coeff_1 = 30 * alpha  # Scale with alpha parameter
+    # logic_site_usage = torch.sum(p_logic, dim=1)
+    # logic_constraint = torch.sum(coeff_1 * Func.softplus(logic_site_usage - 1)**2, dim=1)
+
+    # coeff_2 = 30 * beta   # Scale with beta parameter
+    # io_site_usage = torch.sum(p_io, dim=1)
+    # io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
+
+    # return logic_constraint + io_constraint
 
 # =============================================================================
 # Manual Gradient Functions

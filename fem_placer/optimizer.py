@@ -32,7 +32,7 @@ class FPGAPlacementOptimizer:
             num_inst: int,
             num_fixed_inst: int,
             num_site: int,
-            bbox_length: int,
+            logic_grid_width: int,
             coupling_matrix: torch.Tensor,
             site_coords_matrix: torch.Tensor,
             io_site_connect_matrix: torch.Tensor = None,
@@ -73,7 +73,7 @@ class FPGAPlacementOptimizer:
         self.io_site_connect_matrix = io_site_connect_matrix
         self.io_site_coords = io_site_coords
         # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor 
-        self.bbox_length = bbox_length    
+        self.logic_grid_width = logic_grid_width    
         self.constraint_alpha = constraint_alpha
         self.constraint_beta = constraint_beta
         
@@ -181,9 +181,9 @@ class FPGAPlacementOptimizer:
 
         if self.with_io:
             p = self.iterate_placement_with_io()
-            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords_matrix, self.io_site_coords)
+            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.logic_grid_width, self.site_coords_matrix, self.io_site_coords)
             return config, result
         else:
-            p = self.iterate_placement(self.bbox_length)
-            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
+            p = self.iterate_placement(self.logic_grid_width)
+            config, result = infer_placements(self.coupling_matrix, p, self.logic_grid_width, self.site_coords_matrix)
             return config, result

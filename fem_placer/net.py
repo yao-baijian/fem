@@ -28,6 +28,8 @@ class NetManager:
         self.insts_matrix = None
         self.io_insts_matrix = None
         self.logic_depth = 1.0  # Store estimated logic depth
+        self.max_degree = 0 
+        self.avg_degree = 0.0
 
         self.get_site_inst_id_by_name_func = get_site_inst_id_by_name_func
         self.get_site_inst_name_by_id_func = get_site_inst_name_by_id_func
@@ -56,14 +58,18 @@ class NetManager:
         
         # Estimate logic depth from the design
         self._estimate_logic_depth()
+        self._calculate_net_degrees()
         
         if self.debug:
             self.save_net_debug_info()
 
         return total_hpwl, total_hpwl_no_io
+    
+    def get_net_degrees(self) -> tuple[int, float]:
+        return self.max_degree, self.avg_degree
 
     # Calculate network degree statistics for placer ML
-    def calculate_net_degrees(self) -> tuple[int, float]:
+    def _calculate_net_degrees(self):
         """
         Calculate network degree statistics.
         Returns:
@@ -75,14 +81,19 @@ class NetManager:
         for net in self.nets:
             if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
                 continue
-            pins = net.getPins()  # TODO this needs to be pins in different site
-            degree = len(pins)
-            degrees.append(degree)
-        if not degrees:
-            return 0, 0.0
-        max_degree = max(degrees)
-        avg_degree = sum(degrees) / len(degrees)
-        return max_degree, avg_degree
+            pins = net.getPins()
+            # Count unique sites that this net connects to
+            sites_in_net = set()
+            for pin in pins:
+                site_inst = pin.getSiteInst()
+                if site_inst:
+                    sites_in_net.add(site_inst.getName())
+            degree = len(sites_in_net)
+            if degree >= 2:  # Only count nets that connect at least 2 sites
+                degrees.append(degree)
+
+        self.max_degree = max(degrees)
+        self.avg_degree = sum(degrees) / len(degrees)
 
     def _estimate_logic_depth(self):
         """
@@ -236,7 +247,7 @@ class NetManager:
                 sites_net_list.append(logic_sites)
 
         self._create_net_tensor(valid_net_num, sites_net_list, optimizable_insts_num)
-        self._create_net_matrix(optimizable_insts_num, available_sites_num, fixed_insts_num)
+        self._create_net_matrix(optimizable_insts_num, fixed_insts_num)
         self.save_tensor_debug_info(instance_count=optimizable_insts_num)
         INFO(f"Processed {valid_net_num} nets, total {len(self.nets)} nets",
               f" {len(self.site_to_site_connectivity)} site-to-site routes",
@@ -308,9 +319,8 @@ class NetManager:
 
         INFO(f"Net tensor shape {self.net_tensor.shape[0]} x {self.net_tensor.shape[1]}")
 
-    def _create_net_matrix(self, optimizable_insts_num, available_sites_num, fixed_insts_num):
+    def _create_net_matrix(self, optimizable_insts_num, fixed_insts_num):
         n = optimizable_insts_num
-        m = available_sites_num
         k = fixed_insts_num
         self.insts_matrix = torch.zeros((n, n), device=self.device)
 

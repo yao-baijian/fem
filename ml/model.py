@@ -3,17 +3,18 @@ import joblib
 from sklearn.ensemble import RandomForestRegressor
 from typing import Any
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "alpha_model.pkl")
+RESULT_DIR = os.path.join(os.path.dirname(__file__), "..", "result")
+os.makedirs(RESULT_DIR, exist_ok=True)
 
-MODEL_PATH_TEMPLATE = os.path.join(os.path.dirname(__file__), "{target}_model.pkl")
+MODEL_PATH_TEMPLATE = os.path.join(RESULT_DIR, "{target}_model.pkl")
 
 def get_model_path(target: str = "alpha"):
     return MODEL_PATH_TEMPLATE.format(target=target)
 
-def save_model(model: Any, path: str = MODEL_PATH):
+def save_model(model: Any, path: str):
     joblib.dump(model, path)
 
-def load_model(path: str = MODEL_PATH):
+def load_model(path: str):
     if not os.path.exists(path):
         return None
     return joblib.load(path)

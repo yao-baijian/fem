@@ -88,7 +88,6 @@ def run_optimization_with_anneal(fpga_placer, instance, anneal_type, num_trials,
     
     return loss_history, result, config
 
-
 def main():
     # Initialize FPGA placer once (same instance for all annealing runs)
     place_type = PlaceType.CENTERED
@@ -108,10 +107,10 @@ def main():
         f'./vivado/output_dir/{INSTANCE}/optimized_placement.pl'
     )
     
-    area_size = fpga_placer.grids['logic'].area
-    
-    # Predict alpha for constraint weighting
-    row = extract_features_from_placer(fpga_placer, hpwl_before=0, hpwl_after=0, overlap_after=0, alpha=0)
+    row = extract_features_from_placer(fpga_placer,
+                                       alpha=0, 
+                                       beta=0,
+                                       with_io=False)
     alpha = predict_alpha(row)
     INFO(f'Predicted alpha: {alpha}')
     fpga_placer.set_alpha(alpha)

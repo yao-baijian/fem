@@ -22,21 +22,25 @@ from ml.predict import predict_alpha
 
 SET_LEVEL('INFO')
 
-instances = ['c6288']
-            # , 'c1355', 'c2670', 'c5315', 'c6288', 'c7552'
-            #  's713', 's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+             's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+
+# 'FPGA-example1'
+
+instances = ['c7552']
+            
 draw_evolution = False
-draw_loss_function = True
+draw_loss_function = False
 draw_final_placement = False
 num_trials = 10
 num_steps = 200
 dev = 'cpu'
 manual_grad = False
-anneal='inverse'
+anneal='exp'
 case_type = 'fpga_placement'
 
 for instance in instances:
-    place_type = PlaceType.CENTERED
+    place_type = PlaceType.IO
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
                             GridType.SQUARE,
@@ -56,18 +60,23 @@ for instance in instances:
     alpha = predict_alpha(row)
     INFO(f'instance {instance}, predicted alpha {alpha}')
     fpga_placer.set_alpha(alpha)
+
+    if place_type == PlaceType.IO:
+        fpga_placer.set_beta(30)
+
+    # fpga_placer.set_alpha(30)
     
     optimizer = FPGAPlacementOptimizer(
         num_inst=fpga_placer.opti_insts_num,
         num_fixed_inst=fpga_placer.fixed_insts_num,
         num_site=fpga_placer.get_grid('logic').area,
+        logic_grid_width = fpga_placer.get_grid('logic').area_width,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,
         io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
         io_site_coords=fpga_placer.io_site_coords,
-        bbox_length = fpga_placer.grids['logic'].area_length,
         constraint_alpha=fpga_placer.constraint_alpha,
-        constraint_beta=fpga_placer.constraint_alpha,  # For IO placements, beta is set separately
+        constraint_beta=fpga_placer.constraint_beta,  # For IO placements, beta is set separately
         num_trials=num_trials,
         num_steps=num_steps,
         dev=dev,

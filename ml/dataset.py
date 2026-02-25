@@ -2,10 +2,12 @@ import csv
 import os
 from typing import Dict, Any, Optional, List
 
-MODULE_DIR = os.path.dirname(__file__)
-CSV_PATH = os.path.join(MODULE_DIR, "ml_data.csv")
+RESULT_DIR = os.path.join(os.path.dirname(__file__), "..", "result")
+os.makedirs(RESULT_DIR, exist_ok=True)
 
-# Feature fields for model training (these go into the model)
+CSV_PATH_ALPHA = os.path.join(RESULT_DIR, "ml_data_alpha.csv")
+CSV_PATH_ALPHA_BETA = os.path.join(RESULT_DIR, "ml_data_alpha_beta.csv")
+
 LOGIC_FIELDNAMES = [
     "opti_insts_num", "avail_sites_num", "utilization",
     "logic_area_length", "logic_area_width", "net_count",
@@ -20,7 +22,6 @@ LOGIC_IO_FIELDNAMES = [
     "alpha", "beta"
 ]
 
-# Default to logic-only (can be overridden)
 FIELDNAMES = LOGIC_FIELDNAMES
 
 def set_fieldnames(with_io: bool = False):
@@ -29,8 +30,10 @@ def set_fieldnames(with_io: bool = False):
     FIELDNAMES = LOGIC_IO_FIELDNAMES if with_io else LOGIC_FIELDNAMES
 
 def get_feature_fieldnames(with_io: bool = False) -> List[str]:
-    """Get only the feature fieldnames (excluding selection fields)."""
-    return LOGIC_IO_FIELDNAMES if with_io else LOGIC_FIELDNAMES
+    """Get only the feature fieldnames (excluding target and selection fields)."""
+    fieldnames = LOGIC_IO_FIELDNAMES if with_io else LOGIC_FIELDNAMES
+    # Remove target variables (alpha and beta)
+    return [f for f in fieldnames if f not in ['alpha', 'beta']]
 
 def extract_features_from_placer(
     placer,
@@ -55,7 +58,7 @@ def extract_features_from_placer(
     logic_grid = placer.get_grid("logic")
     utilization = placer.opti_insts_num / (logic_grid.area_length * logic_grid.area_width)
 
-    max_degree, avg_degree = placer.net_manager.calculate_net_degrees()
+    max_degree, avg_degree = placer.net_manager.get_net_degrees()
     net_count=len(placer.net_manager.nets)
     logic_depth=placer.net_manager.logic_depth
 
@@ -80,24 +83,29 @@ def extract_features_from_placer(
     
     return row
 
+def get_csv_path(target: str = "alpha") -> str:
+    if target == "beta":
+        return CSV_PATH_ALPHA_BETA
+    else:
+        return CSV_PATH_ALPHA
+
 def append_row(row: Dict[str, Any], path: Optional[str] = None, with_io: bool = False):
     """
     Append a row to the CSV file.
     
     Args:
         row: Dictionary with features
-        path: Path to CSV file (defaults to CSV_PATH)
-        with_io: Whether to use IO fieldnames
+        path: Path to CSV file (defaults to CSV_PATH based on with_io)
+        with_io: Whether to use IO fieldnames (determines default CSV path)
     """
-    p = path or CSV_PATH
-    exists = os.path.exists(p)
+    if path is None:
+        path = CSV_PATH_ALPHA_BETA if with_io else CSV_PATH_ALPHA
     
-    # Determine which fieldnames to use
+    exists = os.path.exists(path)
     fieldnames = LOGIC_IO_FIELDNAMES if with_io else LOGIC_FIELDNAMES
     
-    with open(p, "a", newline="") as f:
+    with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not exists:
             writer.writeheader()
-        # Only write fields that are in fieldnames
         writer.writerow({k: row.get(k, "") for k in fieldnames})
