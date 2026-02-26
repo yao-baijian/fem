@@ -22,8 +22,8 @@ from ml.predict import predict_alpha
 
 SET_LEVEL('INFO')
 
-instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-             's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+# instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+#              's713', 's1238', 's1488', 's5378', 's9234', 's15850']
 
 # 'FPGA-example1'
 
@@ -32,15 +32,15 @@ instances = ['c7552']
 draw_evolution = False
 draw_loss_function = False
 draw_final_placement = False
-num_trials = 10
-num_steps = 200
+num_trials = 5
+num_steps = 400
 dev = 'cpu'
 manual_grad = False
-anneal='exp'
+anneal='lin'
 case_type = 'fpga_placement'
 
 for instance in instances:
-    place_type = PlaceType.IO
+    place_type = PlaceType.CENTERED
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
                             GridType.SQUARE,
@@ -62,7 +62,7 @@ for instance in instances:
     fpga_placer.set_alpha(alpha)
 
     if place_type == PlaceType.IO:
-        fpga_placer.set_beta(30)
+        fpga_placer.set_beta(10)
 
     # fpga_placer.set_alpha(30)
     
@@ -70,7 +70,8 @@ for instance in instances:
         num_inst=fpga_placer.opti_insts_num,
         num_fixed_inst=fpga_placer.fixed_insts_num,
         num_site=fpga_placer.get_grid('logic').area,
-        logic_grid_width = fpga_placer.get_grid('logic').area_width,
+        num_fixed_site=fpga_placer.get_grid('io').area_width,
+        logic_grid_width=fpga_placer.get_grid('logic').area_width,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,
         io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,

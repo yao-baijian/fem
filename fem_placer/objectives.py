@@ -74,6 +74,36 @@ def get_io_coords_from_index(inst_indices):
     return coords.float()
 
 
+def count_duplicate_coords(coords):
+    """
+    Count duplicate coordinate pairs and calculate sum of (count - 1) for each unique pair.
+
+    For each unique coordinate, if it appears a_i times, add (a_i - 1) to the total.
+    This measures the total number of "extra" duplicates.
+
+    Args:
+        coords: Tensor of coordinates [num_coords, 2] or [batch_size, num_coords, 2]
+
+    Returns:
+        duplicate_count: Sum of (a_i - 1) for all unique coordinate sets
+    """
+    # Handle batch dimension if present
+    if coords.dim() == 3:
+        coords = coords[0]  # Take first batch element
+    
+    # Convert to tuple format for comparison
+    # Stack into a single tensor for unique operation
+    coords_int = coords.long()
+    
+    # Use torch.unique with return_counts
+    unique_coords, counts = torch.unique(coords_int, dim=0, return_counts=True)
+    
+    # Calculate sum(a_i - 1) where a_i is the count for each unique coordinate
+    duplicate_sum = torch.sum(counts - 1).item()
+    
+    return duplicate_sum, unique_coords, counts
+
+
 def get_site_distance_matrix(coords):
     """
     Calculate Manhattan distance matrix between all pairs of sites.
@@ -146,7 +176,7 @@ def get_placements_from_index_st(p, site_coords_matrix):
 # HPWL Loss Functions (QUBO approach)
 # =============================================================================
 
-def get_hpwl_loss_qubo(J, p, site_coords_matrix):
+def get_hpwl_loss_qubo(J, p, D):
     """
     Calculate HPWL loss using QUBO formulation.
 
@@ -158,31 +188,17 @@ def get_hpwl_loss_qubo(J, p, site_coords_matrix):
     Returns:
         total_wirelength: Total wirelength for each batch [batch_size]
     """
-    _, num_instances, _ = p.shape
-
-    # Distance matrix between sites
-    coords_i = site_coords_matrix.unsqueeze(1)
-    coords_j = site_coords_matrix.unsqueeze(0)
-    D = torch.sum(torch.abs(coords_i - coords_j), dim=2)
-
     # Batch matrix multiplication: (p @ D) @ p^T
     PD = torch.matmul(p, D)
     P_transposed = p.transpose(1, 2)
     E_matrix = torch.bmm(PD, P_transposed)
 
-    # Upper triangular mask
-    triu_mask = torch.triu(torch.ones(num_instances, num_instances, device=p.device), diagonal=1).bool()
-
-    # Weight and sum
-    weighted_E = E_matrix * J.unsqueeze(0)
-    weighted_E_triu = weighted_E[:, triu_mask]
-    total_wirelength = torch.sum(weighted_E_triu, dim=1)
-
-    return total_wirelength
+    return 0.5 * torch.sum(E_matrix * J.unsqueeze(0), dim=(1, 2))
 
 
-def get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io,
-                               logic_site_coords_matrix, io_site_coords_matrix):
+def get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
+                               p_logic, p_io,
+                               D_LL, D_LI):
     """
     Calculate HPWL loss including IO connections.
 
@@ -200,28 +216,13 @@ def get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io,
     batch_size, n_logic, _ = p_logic.shape
     device = p_logic.device
 
-    x_logic = logic_site_coords_matrix[:, 0]
-    y_logic = logic_site_coords_matrix[:, 1]
-
-    Dx_LL = torch.abs(x_logic.unsqueeze(1) - x_logic.unsqueeze(0))
-    Dy_LL = torch.abs(y_logic.unsqueeze(1) - y_logic.unsqueeze(0))
-    D_LL = Dx_LL + Dy_LL
-
-    x_io = io_site_coords_matrix[:, 0]
-    y_io = io_site_coords_matrix[:, 1]
-
-    Dx_LI = torch.abs(x_logic.unsqueeze(1) - x_io.unsqueeze(0))
-    Dy_LI = torch.abs(y_logic.unsqueeze(1) - y_io.unsqueeze(0))
-    D_LI = Dx_LI + Dy_LI
-
     total_wl = torch.zeros(batch_size, device=device)
 
     # Logic-logic wirelength
     PD = torch.matmul(p_logic, D_LL)
     p_logic_T = p_logic.transpose(1, 2)
-    E = torch.bmm(PD, p_logic_T)
-    triu_mask = torch.triu(torch.ones(n_logic, n_logic, device=device), diagonal=1)
-    wl_LL = torch.sum(E * J_LL.unsqueeze(0) * triu_mask.unsqueeze(0), dim=(1, 2))
+    E_LL = torch.bmm(PD, p_logic_T)
+    wl_LL = 0.5 * torch.sum(E_LL * J_LL.unsqueeze(0) , dim=(1, 2))
     total_wl += wl_LL
 
     # Logic-IO wirelength
@@ -268,20 +269,12 @@ def get_constraints_loss_with_io(p_logic, p_io, alpha, beta):
     logic_site_usage = torch.sum(p_logic, dim=1)
     logic_constraint = torch.sum(coeff_1 * Func.softplus(logic_site_usage - 1)**2, dim=1)
 
-    coeff_2 = p_io.shape[1] / 2
+    coeff_2 = p_io.shape[1] / 20
     io_site_usage = torch.sum(p_io, dim=1)
     io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
     return alpha * logic_constraint + beta * io_constraint
 
-    # coeff_1 = 30 * alpha  # Scale with alpha parameter
-    # logic_site_usage = torch.sum(p_logic, dim=1)
-    # logic_constraint = torch.sum(coeff_1 * Func.softplus(logic_site_usage - 1)**2, dim=1)
-
-    # coeff_2 = 30 * beta   # Scale with beta parameter
-    # io_site_usage = torch.sum(p_io, dim=1)
-    # io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
-
-    # return logic_constraint + io_constraint
+# 
 
 # =============================================================================
 # Manual Gradient Functions
@@ -379,7 +372,7 @@ def manual_grad_placement(p, J, site_coords_matrix, lambda_constraint=30.0):
 # Expected Placement Loss Functions (QUBO approach)
 # =============================================================================
 
-def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
+def expected_fpga_placement(J, p, D, step, area_width, alpha):
     """
     Calculate expected placement loss (HPWL + constraints).
 
@@ -396,7 +389,7 @@ def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
     """
     global _hpwl_loss_history, _constrain_loss_history, _total_loss_history, _placement_history
 
-    hpwl = get_hpwl_loss_qubo(J, p, site_coords_matrix)
+    hpwl = get_hpwl_loss_qubo(J, p, D)
     constrain_loss = get_constraints_loss(p, alpha)
 
     hpwl_val = hpwl
@@ -414,7 +407,10 @@ def expected_fpga_placement(J, p, site_coords_matrix, step, area_width, alpha):
     return hpwl + constrain_loss
 
 
-def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords, alpha, beta):
+def expected_fpga_placement_with_io(J_LL, J_LI, 
+                                    p_logic, p_io, 
+                                    D_LL, D_LI,
+                                    alpha, beta):
     """
     Calculate expected placement loss including IO connections.
 
@@ -423,15 +419,16 @@ def expected_fpga_placement_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords
         J_LI: Logic-IO coupling matrix
         p_logic: Logic probability distribution
         p_io: IO probability distribution
-        logic_site_coords: Logic site coordinates
-        io_site_coords: IO site coordinates
+        D_LL: Logic-logic distance matrix
+        D_LI: Logic-IO distance matrix
 
     Returns:
         total_loss: Combined loss [batch_size]
     """
-    hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords, io_site_coords)
+    hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, D_LL, D_LI)
     constrain_loss = get_constraints_loss_with_io(p_logic, p_io, alpha, beta)
     return hpwl + constrain_loss
+    # return constrain_loss
 
 
 # =============================================================================
@@ -514,7 +511,7 @@ def decode_qubo_solution(z, m, n, site_coords_matrix):
     return site_indices, coords
 
 
-def infer_placements(J, p, area_width, site_coords_matrix):
+def infer_placements(J, p, area_width, D):
     """
     Infer final placements from probability distribution (matches master exactly).
 
@@ -530,11 +527,14 @@ def infer_placements(J, p, area_width, site_coords_matrix):
     """
     inst_indices = torch.argmax(p, dim=2)
     inst_coords = get_inst_coords_from_index(inst_indices, area_width)
-    result = get_hpwl_loss_qubo(J, p, site_coords_matrix)
+    result = get_hpwl_loss_qubo(J, p, D)
     return inst_coords, result
 
 
-def infer_placements_with_io(J_LL, J_LI, p_logic, p_io, area_width, logic_site_coords_matrix, io_site_coords_matrix):
+def infer_placements_with_io(J_LL, J_LI, 
+                             p_logic, p_io, 
+                             area_width, 
+                             D_LL, D_LI):
     """
     Infer final placements including IO from probability distributions.
 
@@ -555,5 +555,11 @@ def infer_placements_with_io(J_LL, J_LI, p_logic, p_io, area_width, logic_site_c
     io_inst_indices = torch.argmax(p_io, dim=2)
     logic_inst_coords = get_inst_coords_from_index(logic_inst_indices, area_width)
     io_inst_coords = get_io_coords_from_index(io_inst_indices)
-    result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, logic_site_coords_matrix, io_site_coords_matrix)
+
+    duplicate_count, unique_coords, counts = count_duplicate_coords(io_inst_coords)
+    print(f"Total duplicate sum: {duplicate_count}")
+
+    result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
+                                        p_logic, p_io, 
+                                        D_LL, D_LI)
     return [logic_inst_coords, io_inst_coords], result

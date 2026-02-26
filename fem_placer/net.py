@@ -1,3 +1,4 @@
+import sys
 import torch
 import rapidwright
 import numpy as np
@@ -260,52 +261,41 @@ class NetManager:
         logic_sites_list = list(logic_sites)
         io_sites_list = list(io_sites)
 
-        # 1. 记录IO站点与逻辑站点之间的连接（双向）
+        # 1. IO to logic
         for i in range(len(io_sites_list)):
             for j in range(len(logic_sites_list)):
                 io_inst1, inst2 = io_sites_list[i], logic_sites_list[j]
 
-                # IO到逻辑站点的连接
                 if io_inst1 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[io_inst1] = {}
                 if inst2 not in self.io_to_site_connectivity[io_inst1]:
                     self.io_to_site_connectivity[io_inst1][inst2] = 0
                 self.io_to_site_connectivity[io_inst1][inst2] += 1
 
-                # 逻辑站点到IO的连接（双向记录）
                 if inst2 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[inst2] = {}
                 if io_inst1 not in self.io_to_site_connectivity[inst2]:
                     self.io_to_site_connectivity[inst2][io_inst1] = 0
                 self.io_to_site_connectivity[inst2][io_inst1] += 1
 
-        # 2. 记录逻辑站点之间的连接
-        # 注意：原始代码有weight计算，但实际使用的是 += 1
-        # weight = (len(logic_sites_list) - 1) ** 2  # 这个weight在原始代码中计算了但没有使用
+        # 2. Logic to logic
+        # weight = (len(logic_sites_list) - 1) ** 2
 
         for i in range(len(logic_sites_list)):
             for j in range(i + 1, len(logic_sites_list)):
                 inst1, inst2 = logic_sites_list[i], logic_sites_list[j]
 
-                # 注意：原始代码中有重复的 += 1，实际上每个连接加了两次
-                # 第一次：self.site_to_site_connectivity[inst1][inst2] += 1
-                # 第二次：self.site_to_site_connectivity[inst1][inst2] += 1 (重复)
-
-                # 双向记录
                 if inst1 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst1] = {}
                 if inst2 not in self.site_to_site_connectivity[inst1]:
                     self.site_to_site_connectivity[inst1][inst2] = 0
-                self.site_to_site_connectivity[inst1][inst2] += 1  # 第一次加1
+                self.site_to_site_connectivity[inst1][inst2] += 1
 
                 if inst2 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst2] = {}
                 if inst1 not in self.site_to_site_connectivity[inst2]:
                     self.site_to_site_connectivity[inst2][inst1] = 0
-                self.site_to_site_connectivity[inst2][inst1] += 1  # 对称加1
-
-                # 原始代码中有重复的 += 1，这里我们只加一次
-                # self.site_to_site_connectivity[inst1][inst2] += 1  # 原始代码重复的第二次加1
+                self.site_to_site_connectivity[inst2][inst1] += 1
 
     def _create_net_tensor(self, valid_net_num, sites_net_list, optimizable_insts_num):
         self.net_tensor = torch.zeros(valid_net_num, optimizable_insts_num, dtype=torch.bool)
@@ -330,7 +320,7 @@ class NetManager:
                 for target_site, connection_count in connections.items():
                     target_id = self.get_site_inst_id_by_name_func(target_site)
                     if target_id is not None:
-                        self.insts_matrix[source_id, target_id] = connection_count
+                        self.insts_matrix[source_id, target_id] += connection_count
                     else:
                         ERROR(f'Cannot find site target id {target_id}')
             else:
@@ -344,7 +334,8 @@ class NetManager:
                 for target_site, connection_count in connections.items():
                     target_id = self.get_site_inst_id_by_name_func(target_site)
                     if target_id is not None:
-                        self.io_insts_matrix_all[source_id, target_id] = connection_count
+                        self.io_insts_matrix_all[source_id, target_id] += connection_count
+                        # INFO(f'Connecting IO {source_site} (id {source_id}) to site {target_site} (id {target_id}), count {connection_count}')
                     else:
                         ERROR(f'Cannot find site target id {target_id}')
             else:
@@ -353,6 +344,38 @@ class NetManager:
         self.io_insts_matrix =  self.io_insts_matrix_all[0:n, n:n+k]
 
         INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
+
+        original_options = np.get_printoptions()
+        # Set print options to show full matrix without truncation
+        np.set_printoptions(threshold=np.inf, linewidth=np.inf)
+
+        with open('result/matrix_debug.txt', 'w') as f:
+            original_stdout = sys.stdout
+            sys.stdout = f
+            
+            print("=" * 50)
+            print("insts_matrix ({} x {}):".format(n, n))
+            print("=" * 50)
+            print(self.insts_matrix.cpu().numpy())
+            print("\n")
+            
+            print("=" * 50)
+            print("io_insts_matrix_all ({} x {}):".format(n + k, n + k))
+            print("=" * 50)
+            print(self.io_insts_matrix_all.cpu().numpy())
+            print("\n")
+            
+            print("=" * 50)
+            print("io_insts_matrix ({} x {}):".format(n, k))
+            print("=" * 50)
+            print(self.io_insts_matrix.cpu().numpy())
+            print("\n")
+            
+            # Restore stdout
+            sys.stdout = original_stdout
+        
+        # Restore original numpy print options
+        np.set_printoptions(**original_options)
 
     def save_tensor_debug_info(self, output_path='result/net_to_slice_sites_tensor_debug.txt', instance_count=None):
         num_nets = self.net_tensor.shape[0]

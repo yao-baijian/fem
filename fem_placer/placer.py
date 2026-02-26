@@ -249,6 +249,9 @@ class FpgaPlacer:
         if self.grid_type == GridType.SQUARE:
             area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
             area_height = area_length
+
+            # area_length = 8
+            # area_height = 100
         
         elif self.grid_type == GridType.RECTAN:
             # Rectangular grid: consider logic depth from net analysis
@@ -265,9 +268,6 @@ class FpgaPlacer:
             # => length = sqrt(base_area * aspect_ratio), width = sqrt(base_area / aspect_ratio)
             area_length = int(np.ceil(np.sqrt(base_area * aspect_ratio)))
             area_height = int(np.ceil(np.sqrt(base_area / aspect_ratio)))
-
-            # area_length = 14
-            # area_height = 18
             
             INFO(f"Using RECT grid: logic_depth_factor={logic_depth:.3f}, aspect_ratio={aspect_ratio:.3f}")
         
@@ -295,18 +295,18 @@ class FpgaPlacer:
     def _init_io_area(self):
         num_pins = len(self.fixed_insts)
         
-        io_width = 1
-        io_height = num_pins + 3
+        io_length = 1
+        io_width = num_pins + num_pins // 15
         
-        io_start_x = self.grids['logic'].start_x - io_width       
+        io_start_x = self.grids['logic'].start_x - io_length       
         bbox_center_y = self.grids['logic'].center_y
-        io_start_y = bbox_center_y - io_height // 2
+        io_start_y = bbox_center_y - io_width // 2
 
         io_grid = self.grids['io']
         io_grid.start_x = io_start_x
         io_grid.start_y = io_start_y
-        io_grid.area_length = io_width
-        io_grid.area_width = io_height
+        io_grid.area_length = io_length
+        io_grid.area_width = io_width
         io_grid.__post_init__()
         
         INFO(f"Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
@@ -463,9 +463,11 @@ class FpgaPlacer:
     #     return torch.stack([x_coords, y_coords], dim=1)
 
     def _get_io_area_coords(self):
+        place_width = self.grids['io'].area_width 
+
         self.io_site_coords = self.grids['io'].to_real_coords_tensor(torch.cartesian_prod(
             torch.tensor([0], dtype=torch.float32, device=self.device),
-            torch.arange(self.fixed_insts_num, dtype=torch.float32, device=self.device) 
+            torch.arange(place_width, dtype=torch.float32, device=self.device) 
         ))
         
     def _get_combined_coords(self):
