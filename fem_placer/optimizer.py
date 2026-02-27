@@ -1,8 +1,9 @@
 import torch
+import json
 from math import log
 from typing import Tuple
 from .objectives import *
-
+from fem_placer.config import PlaceType, GridType
 
 def entropy_q(p):
     """
@@ -103,6 +104,54 @@ class FPGAPlacementOptimizer:
 
         self.D_LL = None
         self.D_LI = None
+
+    @classmethod
+    def from_saved_params(cls, params_file: str, **kwargs):
+        """
+        Create an FPGAPlacementOptimizer from saved parameters in a JSON file.
+        
+        Args:
+            params_file: Path to the JSON file containing saved parameters
+            **kwargs: Additional arguments to override saved parameters
+                      (e.g., num_trials, num_steps, dev, etc.)
+        
+        Returns:
+            FPGAPlacementOptimizer instance
+        """
+        with open(params_file, 'r') as f:
+            data = json.load(f)
+        
+        params = data['params']
+        tensors = data['tensors']
+        
+        coupling_matrix = torch.tensor(tensors['coupling_matrix'], dtype=torch.float32) if 'coupling_matrix' in tensors else None
+        site_coords_matrix = torch.tensor(tensors['site_coords_matrix'], dtype=torch.float32) if 'site_coords_matrix' in tensors else None
+        io_site_connect_matrix = torch.tensor(tensors['io_site_connect_matrix'], dtype=torch.float32) if 'io_site_connect_matrix' in tensors else None
+        io_site_coords = torch.tensor(tensors['io_site_coords'], dtype=torch.float32) if 'io_site_coords' in tensors else None
+        
+        place_orientation = PlaceType[params['place_orientation']] if params['place_orientation'] in PlaceType.__members__ else PlaceType.CENTERED
+        grid_type = GridType[params['grid_type']] if params['grid_type'] in GridType.__members__ else GridType.SQUARE
+        
+        default_kwargs = {
+            'num_inst': params['num_inst'],
+            'num_fixed_inst': params['num_fixed_inst'],
+            'num_site': params['num_site'],
+            'num_fixed_site': params['num_fixed_site'],
+            'logic_grid_width': params['logic_grid_width'],
+            'coupling_matrix': coupling_matrix,
+            'site_coords_matrix': site_coords_matrix,
+            'io_site_connect_matrix': io_site_connect_matrix,
+            'io_site_coords': io_site_coords,
+            'constraint_alpha': params['constraint_alpha'],
+            'constraint_beta': params['constraint_beta'],
+            'dev': params['device'],
+            'dtype': torch.float32,
+            'with_io': params['with_io'],
+        }
+        
+        default_kwargs.update(kwargs)
+        
+        return cls(**default_kwargs)
 
     def _initialize(self):
 

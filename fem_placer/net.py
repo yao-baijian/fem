@@ -1,4 +1,5 @@
 import sys
+import os
 import torch
 import rapidwright
 import numpy as np
@@ -36,8 +37,11 @@ class NetManager:
         self.get_site_inst_name_by_id_func = get_site_inst_name_by_id_func
         self.map_coords_to_instance_func = map_coords_to_instance_func
 
-        self.debug_src_root = "result/net_manager_debug.txt"
+        self.debug_src_root = "result"
         self.hpwl_calculator = HPWLCalculator(device, debug=debug)
+    
+    def set_debug_path(self, result_dir='result', instance_name=None):
+        self.debug_src_root = os.path.join(result_dir, instance_name) if instance_name else result_dir
 
     def analyze_design_hpwl(self, design):
         self.hpwl_calculator.clear()
@@ -155,7 +159,9 @@ class NetManager:
             self.hpwl_calculator.compute_net_hpwl(net_name, connected_sites, instance_coords, include_io=include_io)
         return self.hpwl_calculator.get_hpwl()
 
-    def save_net_debug_info(self, output_path='result/net_debug_info.txt'):
+    def save_net_debug_info(self, output_path=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'net_debug_info.txt')
         with open(output_path, 'w') as f:
             f.write("Net_IDX\tNet_Name\tHPWL\tSite_Count\tSites_Info\n")
             for idx, net in enumerate(self.nets):
@@ -182,7 +188,9 @@ class NetManager:
                 if hpwl > 0.0:
                     f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{site_count}\t{sites_str}\n")
 
-    def save_solver_hpwl_debug(self, instance_coords, net_to_sites, output_path='result/solver_hpwl_debug.txt'):
+    def save_solver_hpwl_debug(self, instance_coords, net_to_sites, output_path=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'solver_hpwl_debug.txt')
         with open(output_path, 'w') as f:
             f.write("Net_IDX\tNet_Name\tHPWL\tInstance_Count\tInstances_Info\n")
 
@@ -349,7 +357,8 @@ class NetManager:
         # Set print options to show full matrix without truncation
         np.set_printoptions(threshold=np.inf, linewidth=np.inf)
 
-        with open('result/matrix_debug.txt', 'w') as f:
+        matrix_debug_path = os.path.join(self.debug_src_root, 'matrix_debug.txt')
+        with open(matrix_debug_path, 'w') as f:
             original_stdout = sys.stdout
             sys.stdout = f
             
@@ -377,7 +386,9 @@ class NetManager:
         # Restore original numpy print options
         np.set_printoptions(**original_options)
 
-    def save_tensor_debug_info(self, output_path='result/net_to_slice_sites_tensor_debug.txt', instance_count=None):
+    def save_tensor_debug_info(self, output_path=None, instance_count=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'net_to_slice_sites_tensor_debug.txt')
         num_nets = self.net_tensor.shape[0]
         if instance_count is None:
             instance_count = self.net_tensor.shape[1]

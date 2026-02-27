@@ -1,5 +1,7 @@
 import sys
 sys.path.append('.')
+import os
+import json
 import numpy as np
 import random
 import io
@@ -74,7 +76,20 @@ class FpgaPlacer:
         self.device = device
         self.constraint_alpha = 0
         self.constraint_beta = 0
+        self.instance_name = None
+        self.result_dir = 'result'
         pass
+    
+    def set_instance_name(self, instance_name, result_dir='result'):
+        self.instance_name = instance_name
+        self.result_dir = result_dir
+        os.makedirs(os.path.join(result_dir, instance_name), exist_ok=True)
+        self.net_manager.set_debug_path(result_dir, instance_name)
+    
+    def get_debug_output_path(self, filename):
+        if self.instance_name:
+            return os.path.join(self.result_dir, self.instance_name, filename)
+        return os.path.join(self.result_dir, filename)
     
     def with_io(self):
         if self.place_orientation == PlaceType.IO:
@@ -222,14 +237,14 @@ class FpgaPlacer:
             self.available_site_to_id[site_name] = idx
             self.available_id_to_site[idx] = site_name
 
-        with open('result/optimizable_site_mapping_debug.tsv', 'w') as f:
+        with open(self.get_debug_output_path('optimizable_site_mapping_debug.tsv'), 'w') as f:
             f.write("Type\tSiteInst_Name\tID\n")
             for idx in range(len(self.optimizable_insts)):
                 site_name = self.optimizable_id_to_site_inst[idx]
                 f.write(f"Optimizable\t{site_name}\t{idx}\n")
             f.write(f"TOTAL\t{len(self.optimizable_insts)}\n\n")
             
-        with open('result/fixed_site_mapping_debug.tsv', 'w') as f:
+        with open(self.get_debug_output_path('fixed_site_mapping_debug.tsv'), 'w') as f:
             f.write("Type\tSiteInst_Name\tID\n")
             for idx in range(len(self.fixed_insts)):
                 site_name = self.fixed_id_to_site[idx]
@@ -432,6 +447,47 @@ class FpgaPlacer:
         self._get_combined_coords()
 
         return vivado_hpwl, self.opti_insts_num, site_net_num, total_net_num
+
+    def save_init_params(self, instance_name, result_dir='result'):
+        os.makedirs(os.path.join(result_dir, instance_name), exist_ok=True)
+        
+        self.net_manager.set_debug_path(result_dir, instance_name)
+        
+        params = {
+            'num_inst': self.opti_insts_num,
+            'num_fixed_inst': self.fixed_insts_num,
+            'num_site': self.grids['logic'].area,
+            'num_fixed_site': self.grids['io'].area_width,
+            'logic_grid_width': self.grids['logic'].area_width,
+            'constraint_alpha': self.constraint_alpha,
+            'constraint_beta': self.constraint_beta,
+            'device': self.device,
+            'place_orientation': self.place_orientation.name if hasattr(self.place_orientation, 'name') else str(self.place_orientation),
+            'grid_type': self.grid_type.name if hasattr(self.grid_type, 'name') else str(self.grid_type),
+            'utilization_factor': self.utilization_factor,
+            'with_io': self.with_io(),
+        }
+        
+        tensor_data = {}
+        
+        if self.net_manager.insts_matrix is not None:
+            tensor_data['coupling_matrix'] = self.net_manager.insts_matrix.cpu().numpy().tolist()
+        
+        if self.logic_site_coords is not None:
+            tensor_data['site_coords_matrix'] = self.logic_site_coords.cpu().numpy().tolist()
+        
+        if self.net_manager.io_insts_matrix is not None:
+            tensor_data['io_site_connect_matrix'] = self.net_manager.io_insts_matrix.cpu().numpy().tolist()
+        
+        if self.io_site_coords is not None:
+            tensor_data['io_site_coords'] = self.io_site_coords.cpu().numpy().tolist()
+        
+        output_path = os.path.join(result_dir, instance_name, 'init_params.json')
+        with open(output_path, 'w') as f:
+            json.dump({'params': params, 'tensors': tensor_data}, f, indent=2)
+        
+        INFO(f"Saved init parameters to {output_path}")
+        return output_path
 
     def map_coords_to_instance(self, coords, io_coords=None, include_io=False):
         instance_coords = {}
