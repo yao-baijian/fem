@@ -25,8 +25,6 @@ class Legalizer:
             self._load_coords_to_grids(self.io_grid, io_coords, io_ids)
             io_moved = self._resolve_grid_overlaps(self.io_grid, coords, io_coords, True)
 
-        moved_count = logic_moved + io_moved
-
         legalized_logic = self.logic_grid.to_coords_tensor(coords.shape[0])
         legalized_io = self.io_grid.to_coords_tensor(io_coords.shape[0]) if include_io else None
 
@@ -34,9 +32,9 @@ class Legalizer:
         hpwl_legalized = self.placer.net_manager.analyze_solver_hpwl(legalized_logic, legalized_io, include_io)
 
         if include_io:
-            INFO(f"Hpwl {hpwl_before['hpwl']:.2f} -> {hpwl_legalized['hpwl']:.2f}, moved {moved_count} instances")
+            INFO(f"Hpwl {hpwl_before['hpwl']:.2f} -> {hpwl_legalized['hpwl']:.2f}, logic move: {logic_moved}, io move: {io_moved}")
         else:
-            INFO(f"Hpwl no IO {hpwl_before['hpwl_no_io']:.2f} -> {hpwl_legalized['hpwl_no_io']:.2f}, moved {moved_count} instances")
+            INFO(f"Hpwl no IO {hpwl_before['hpwl_no_io']:.2f} -> {hpwl_legalized['hpwl_no_io']:.2f}, moved {logic_moved} instances")
 
         INFO(f"Stage 2: global optimization")
 
@@ -52,7 +50,7 @@ class Legalizer:
         else:
             INFO(f"Optimized hpwl no IO {hpwl_opt['hpwl_no_io']:.2f}, improve {hpwl_opt['hpwl_no_io'] - hpwl_legalized['hpwl_no_io']:.2f}")
 
-        return [optimized_logic, optimized_io], moved_count, hpwl_legalized, hpwl_opt
+        return [optimized_logic, optimized_io], logic_moved+io_moved, hpwl_legalized, hpwl_opt
 
     def _load_coords_to_grids(self, grid: Grid, coords: torch.Tensor, ids: torch.Tensor):
         grid.clear_all()

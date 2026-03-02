@@ -20,56 +20,71 @@ from fem_placer.config import *
 from ml.dataset import *
 from ml.predict import predict_alpha
 
-SET_LEVEL('INFO')
+SET_LEVEL('WARNING')
 
-instances = ['c5315']
-            # , 'c1355', 'c2670', 'c5315', 'c6288', 'c7552'
-            #  's713', 's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+# instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+#              's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+
+# 'FPGA-example1'
+
+instances = ['c7552']
+            
 draw_evolution = False
 draw_loss_function = False
 draw_final_placement = False
-num_trials = 10
+num_trials = 5
 num_steps = 200
-dev = 'cuda'
+dev = 'cpu'
 manual_grad = False
 anneal='inverse'
-case_type = 'fpga_placement'
 
 for instance in instances:
     place_type = PlaceType.CENTERED
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
-                            GridType.SQUARE,
+                            GridType.RECTAN,
                             0.4,
                             debug,
                             device=dev)
+    
+    fpga_placer.set_instance_name(instance)
     
     vivado_hpwl, site_num, site_net_num, total_net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
     area_size = fpga_placer.grids['logic'].area
     global_drawer = PlacementDrawer(placer=fpga_placer)
     
-    row = extract_features_from_placer(fpga_placer, hpwl_before=0, hpwl_after=0, overlap_after=0, alpha=0)
+    row = extract_features_from_placer(fpga_placer,
+                                       alpha=0, 
+                                       beta=0, 
+                                       with_io=False)
+    
     alpha = predict_alpha(row)
     INFO(f'instance {instance}, predicted alpha {alpha}')
     fpga_placer.set_alpha(alpha)
+
+    if place_type == PlaceType.IO:
+        fpga_placer.set_beta(30)
+
+    # fpga_placer.set_alpha(30)
     
     optimizer = FPGAPlacementOptimizer(
         num_inst=fpga_placer.opti_insts_num,
         num_fixed_inst=fpga_placer.fixed_insts_num,
         num_site=fpga_placer.get_grid('logic').area,
+        num_fixed_site=fpga_placer.get_grid('io').area_width,
+        logic_grid_width=fpga_placer.get_grid('logic').area_width,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,
         io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
         io_site_coords=fpga_placer.io_site_coords,
-        bbox_length = fpga_placer.grids['logic'].area_length,
         constraint_alpha=fpga_placer.constraint_alpha,
-        constraint_beta=fpga_placer.constraint_alpha,  # For IO placements, beta is set separately
+        constraint_beta=fpga_placer.constraint_beta,  # For IO placements, beta is set separately
         num_trials=num_trials,
         num_steps=num_steps,
         dev=dev,
         betamin=0.01,
         betamax=0.5,
-        anneal='inverse',
+        anneal=anneal,
         optimizer='adam',
         learning_rate=0.1,
         h_factor=0.01,
@@ -103,11 +118,33 @@ for instance in instances:
             f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl:<12.2f}")
     
     if draw_loss_function:
-        global_drawer.plot_fpga_placement_loss('hpwl_loss.png')
+        global_drawer.plot_fpga_placement_loss('result/hpwl_loss.png')
 
     if draw_evolution:
-        global_drawer.draw_multi_step_placement('placement_evolution.png')
+        global_drawer.draw_multi_step_placement('result/placement_evolution.png')
 
     if draw_final_placement:
         global_drawer.draw_place_and_route(placement_legalized[0], routes, None, False, 1000, title_suffix="Final Placement with Routing")
+
+
+# =============================================================================
+# Example: How to use saved parameters for collaborator without Vivado
+# =============================================================================
+#
+# 1. Save parameters after init_placement (on machine with Vivado):
+#    fpga_placer.save_init_params(instance_name='c7552')
+#    # Output: result/c7552/init_params.json
+#
+# 2. Load parameters and create optimizer (on machine without Vivado):
+#    from fem_placer import FPGAPlacementOptimizer
+#
+#    optimizer = FPGAPlacementOptimizer.from_saved_params(
+#        'result/c7552/init_params.json',
+#        num_trials=10,
+#        num_steps=1000,
+#        dev='cpu'
+#    )
+#
+#    config, result = optimizer.optimize()
+# =============================================================================
 

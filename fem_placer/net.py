@@ -1,5 +1,8 @@
+import sys
+import os
 import torch
 import rapidwright
+import numpy as np
 from typing import Dict, Set, Tuple
 from com.xilinx.rapidwright.design import Design, Net
 from .hpwl import HPWLCalculator
@@ -26,13 +29,19 @@ class NetManager:
         self.net_tensor = None
         self.insts_matrix = None
         self.io_insts_matrix = None
+        self.logic_depth = 1.0  # Store estimated logic depth
+        self.max_degree = 0 
+        self.avg_degree = 0.0
 
         self.get_site_inst_id_by_name_func = get_site_inst_id_by_name_func
         self.get_site_inst_name_by_id_func = get_site_inst_name_by_id_func
         self.map_coords_to_instance_func = map_coords_to_instance_func
 
-        self.debug_src_root = "result/net_manager_debug.txt"
+        self.debug_src_root = "result"
         self.hpwl_calculator = HPWLCalculator(device, debug=debug)
+    
+    def set_debug_path(self, result_dir='result', instance_name=None):
+        self.debug_src_root = os.path.join(result_dir, instance_name) if instance_name else result_dir
 
     def analyze_design_hpwl(self, design):
         self.hpwl_calculator.clear()
@@ -51,10 +60,97 @@ class NetManager:
         total_hpwl = hpwl['hpwl']
         total_hpwl_no_io = hpwl['hpwl_no_io']
         INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
+        
+        # Estimate logic depth from the design
+        self._estimate_logic_depth()
+        self._calculate_net_degrees()
+        
         if self.debug:
             self.save_net_debug_info()
 
         return total_hpwl, total_hpwl_no_io
+    
+    def get_net_degrees(self) -> tuple[int, float]:
+        return self.max_degree, self.avg_degree
+
+    # Calculate network degree statistics for placer ML
+    def _calculate_net_degrees(self):
+        """
+        Calculate network degree statistics.
+        Returns:
+            (max_degree, avg_degree)
+        """
+        if not self.nets or len(self.nets) == 0:
+            return 0, 0.0
+        degrees = []
+        for net in self.nets:
+            if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
+                continue
+            pins = net.getPins()
+            # Count unique sites that this net connects to
+            sites_in_net = set()
+            for pin in pins:
+                site_inst = pin.getSiteInst()
+                if site_inst:
+                    sites_in_net.add(site_inst.getName())
+            degree = len(sites_in_net)
+            if degree >= 2:  # Only count nets that connect at least 2 sites
+                degrees.append(degree)
+
+        self.max_degree = max(degrees)
+        self.avg_degree = sum(degrees) / len(degrees)
+
+    def _estimate_logic_depth(self):
+        """
+        Estimate the logic depth of the design by analyzing the netlist.
+        Uses a heuristic based on net connectivity to estimate critical path depth.
+        
+        Stores result in self.logic_depth: ratio > 1.0 means deep logic
+        """
+        try:
+            if not self.nets or len(self.nets) == 0:
+                self.logic_depth = 1.0
+                return
+            
+            # Count connectivity degree per site
+            site_connectivity = {}
+            for net in self.nets:
+                if net.isClockNet() or net.isVCCNet() or net.isGNDNet():
+                    continue
+                
+                pins = net.getPins()
+                sites_in_net = set()
+                
+                for pin in pins:
+                    site_inst = pin.getSiteInst()
+                    if site_inst:
+                        site_name = site_inst.getName()
+                        sites_in_net.add(site_name)
+                
+                # Update connectivity degree
+                for site in sites_in_net:
+                    site_connectivity[site] = site_connectivity.get(site, 0) + len(sites_in_net)
+            
+            # Calculate average connectivity degree
+            if not site_connectivity:
+                self.logic_depth = 1.0
+                return
+            
+            avg_connectivity = sum(site_connectivity.values()) / len(site_connectivity)
+            total_sites = len(site_connectivity)
+            
+            # Heuristic: deep logic has higher connectivity per site and lower site count
+            # depth_factor correlates with (avg_connectivity / sqrt(total_sites))
+            depth_factor = avg_connectivity / max(1.0, np.sqrt(total_sites))
+            
+            # Normalize to a reasonable range [0.5, 2.0]
+            self.logic_depth = min(2.0, max(0.5, depth_factor / 10.0))
+            
+            INFO(f"Estimated logic depth factor: {self.logic_depth:.3f} (avg_connectivity: {avg_connectivity:.2f}, sites: {total_sites})")
+            
+        except Exception as e:
+            WARNING(f"Failed to estimate logic depth: {e}, using default value 1.0")
+            self.logic_depth = 1.0
 
     def analyze_solver_hpwl(self, coords, io_coords=None, include_io=False):
         self.hpwl_calculator.clear()
@@ -63,7 +159,9 @@ class NetManager:
             self.hpwl_calculator.compute_net_hpwl(net_name, connected_sites, instance_coords, include_io=include_io)
         return self.hpwl_calculator.get_hpwl()
 
-    def save_net_debug_info(self, output_path='result/net_debug_info.txt'):
+    def save_net_debug_info(self, output_path=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'net_debug_info.txt')
         with open(output_path, 'w') as f:
             f.write("Net_IDX\tNet_Name\tHPWL\tSite_Count\tSites_Info\n")
             for idx, net in enumerate(self.nets):
@@ -90,7 +188,9 @@ class NetManager:
                 if hpwl > 0.0:
                     f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{site_count}\t{sites_str}\n")
 
-    def save_solver_hpwl_debug(self, instance_coords, net_to_sites, output_path='result/solver_hpwl_debug.txt'):
+    def save_solver_hpwl_debug(self, instance_coords, net_to_sites, output_path=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'solver_hpwl_debug.txt')
         with open(output_path, 'w') as f:
             f.write("Net_IDX\tNet_Name\tHPWL\tInstance_Count\tInstances_Info\n")
 
@@ -156,7 +256,7 @@ class NetManager:
                 sites_net_list.append(logic_sites)
 
         self._create_net_tensor(valid_net_num, sites_net_list, optimizable_insts_num)
-        self._create_net_matrix(optimizable_insts_num, available_sites_num, fixed_insts_num)
+        self._create_net_matrix(optimizable_insts_num, fixed_insts_num)
         self.save_tensor_debug_info(instance_count=optimizable_insts_num)
         INFO(f"Processed {valid_net_num} nets, total {len(self.nets)} nets",
               f" {len(self.site_to_site_connectivity)} site-to-site routes",
@@ -169,52 +269,41 @@ class NetManager:
         logic_sites_list = list(logic_sites)
         io_sites_list = list(io_sites)
 
-        # 1. 记录IO站点与逻辑站点之间的连接（双向）
+        # 1. IO to logic
         for i in range(len(io_sites_list)):
             for j in range(len(logic_sites_list)):
                 io_inst1, inst2 = io_sites_list[i], logic_sites_list[j]
 
-                # IO到逻辑站点的连接
                 if io_inst1 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[io_inst1] = {}
                 if inst2 not in self.io_to_site_connectivity[io_inst1]:
                     self.io_to_site_connectivity[io_inst1][inst2] = 0
                 self.io_to_site_connectivity[io_inst1][inst2] += 1
 
-                # 逻辑站点到IO的连接（双向记录）
                 if inst2 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[inst2] = {}
                 if io_inst1 not in self.io_to_site_connectivity[inst2]:
                     self.io_to_site_connectivity[inst2][io_inst1] = 0
                 self.io_to_site_connectivity[inst2][io_inst1] += 1
 
-        # 2. 记录逻辑站点之间的连接
-        # 注意：原始代码有weight计算，但实际使用的是 += 1
-        # weight = (len(logic_sites_list) - 1) ** 2  # 这个weight在原始代码中计算了但没有使用
+        # 2. Logic to logic
+        # weight = (len(logic_sites_list) - 1) ** 2
 
         for i in range(len(logic_sites_list)):
             for j in range(i + 1, len(logic_sites_list)):
                 inst1, inst2 = logic_sites_list[i], logic_sites_list[j]
 
-                # 注意：原始代码中有重复的 += 1，实际上每个连接加了两次
-                # 第一次：self.site_to_site_connectivity[inst1][inst2] += 1
-                # 第二次：self.site_to_site_connectivity[inst1][inst2] += 1 (重复)
-
-                # 双向记录
                 if inst1 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst1] = {}
                 if inst2 not in self.site_to_site_connectivity[inst1]:
                     self.site_to_site_connectivity[inst1][inst2] = 0
-                self.site_to_site_connectivity[inst1][inst2] += 1  # 第一次加1
+                self.site_to_site_connectivity[inst1][inst2] += 1
 
                 if inst2 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst2] = {}
                 if inst1 not in self.site_to_site_connectivity[inst2]:
                     self.site_to_site_connectivity[inst2][inst1] = 0
-                self.site_to_site_connectivity[inst2][inst1] += 1  # 对称加1
-
-                # 原始代码中有重复的 += 1，这里我们只加一次
-                # self.site_to_site_connectivity[inst1][inst2] += 1  # 原始代码重复的第二次加1
+                self.site_to_site_connectivity[inst2][inst1] += 1
 
     def _create_net_tensor(self, valid_net_num, sites_net_list, optimizable_insts_num):
         self.net_tensor = torch.zeros(valid_net_num, optimizable_insts_num, dtype=torch.bool)
@@ -228,9 +317,8 @@ class NetManager:
 
         INFO(f"Net tensor shape {self.net_tensor.shape[0]} x {self.net_tensor.shape[1]}")
 
-    def _create_net_matrix(self, optimizable_insts_num, available_sites_num, fixed_insts_num):
+    def _create_net_matrix(self, optimizable_insts_num, fixed_insts_num):
         n = optimizable_insts_num
-        m = available_sites_num
         k = fixed_insts_num
         self.insts_matrix = torch.zeros((n, n), device=self.device)
 
@@ -240,7 +328,7 @@ class NetManager:
                 for target_site, connection_count in connections.items():
                     target_id = self.get_site_inst_id_by_name_func(target_site)
                     if target_id is not None:
-                        self.insts_matrix[source_id, target_id] = connection_count
+                        self.insts_matrix[source_id, target_id] += connection_count
                     else:
                         ERROR(f'Cannot find site target id {target_id}')
             else:
@@ -254,7 +342,8 @@ class NetManager:
                 for target_site, connection_count in connections.items():
                     target_id = self.get_site_inst_id_by_name_func(target_site)
                     if target_id is not None:
-                        self.io_insts_matrix_all[source_id, target_id] = connection_count
+                        self.io_insts_matrix_all[source_id, target_id] += connection_count
+                        # INFO(f'Connecting IO {source_site} (id {source_id}) to site {target_site} (id {target_id}), count {connection_count}')
                     else:
                         ERROR(f'Cannot find site target id {target_id}')
             else:
@@ -264,7 +353,42 @@ class NetManager:
 
         INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
 
-    def save_tensor_debug_info(self, output_path='result/net_to_slice_sites_tensor_debug.txt', instance_count=None):
+        original_options = np.get_printoptions()
+        # Set print options to show full matrix without truncation
+        np.set_printoptions(threshold=np.inf, linewidth=np.inf)
+
+        matrix_debug_path = os.path.join(self.debug_src_root, 'matrix_debug.txt')
+        with open(matrix_debug_path, 'w') as f:
+            original_stdout = sys.stdout
+            sys.stdout = f
+            
+            print("=" * 50)
+            print("insts_matrix ({} x {}):".format(n, n))
+            print("=" * 50)
+            print(self.insts_matrix.cpu().numpy())
+            print("\n")
+            
+            print("=" * 50)
+            print("io_insts_matrix_all ({} x {}):".format(n + k, n + k))
+            print("=" * 50)
+            print(self.io_insts_matrix_all.cpu().numpy())
+            print("\n")
+            
+            print("=" * 50)
+            print("io_insts_matrix ({} x {}):".format(n, k))
+            print("=" * 50)
+            print(self.io_insts_matrix.cpu().numpy())
+            print("\n")
+            
+            # Restore stdout
+            sys.stdout = original_stdout
+        
+        # Restore original numpy print options
+        np.set_printoptions(**original_options)
+
+    def save_tensor_debug_info(self, output_path=None, instance_count=None):
+        if output_path is None:
+            output_path = os.path.join(self.debug_src_root, 'net_to_slice_sites_tensor_debug.txt')
         num_nets = self.net_tensor.shape[0]
         if instance_count is None:
             instance_count = self.net_tensor.shape[1]

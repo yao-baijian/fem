@@ -1,8 +1,9 @@
 import torch
+import json
 from math import log
 from typing import Tuple
 from .objectives import *
-
+from fem_placer.config import PlaceType, GridType
 
 def entropy_q(p):
     """
@@ -32,7 +33,8 @@ class FPGAPlacementOptimizer:
             num_inst: int,
             num_fixed_inst: int,
             num_site: int,
-            bbox_length: int,
+            num_fixed_site: int,
+            logic_grid_width: int,
             coupling_matrix: torch.Tensor,
             site_coords_matrix: torch.Tensor,
             io_site_connect_matrix: torch.Tensor = None,
@@ -68,12 +70,13 @@ class FPGAPlacementOptimizer:
         self.num_inst = num_inst
         self.fixed_insts_num = num_fixed_inst
         self.num_site = num_site
+        self.fixed_site_num = num_fixed_site
         self.coupling_matrix = coupling_matrix
         self.site_coords_matrix = site_coords_matrix
         self.io_site_connect_matrix = io_site_connect_matrix
         self.io_site_coords = io_site_coords
         # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor 
-        self.bbox_length = bbox_length    
+        self.logic_grid_width = logic_grid_width    
         self.constraint_alpha = constraint_alpha
         self.constraint_beta = constraint_beta
         
@@ -97,6 +100,59 @@ class FPGAPlacementOptimizer:
         self.with_io = with_io
         self.manual_grad = manual_grad
 
+        self.D = None
+
+        self.D_LL = None
+        self.D_LI = None
+
+    @classmethod
+    def from_saved_params(cls, params_file: str, **kwargs):
+        """
+        Create an FPGAPlacementOptimizer from saved parameters in a JSON file.
+        
+        Args:
+            params_file: Path to the JSON file containing saved parameters
+            **kwargs: Additional arguments to override saved parameters
+                      (e.g., num_trials, num_steps, dev, etc.)
+        
+        Returns:
+            FPGAPlacementOptimizer instance
+        """
+        with open(params_file, 'r') as f:
+            data = json.load(f)
+        
+        params = data['params']
+        tensors = data['tensors']
+        
+        coupling_matrix = torch.tensor(tensors['coupling_matrix'], dtype=torch.float32) if 'coupling_matrix' in tensors else None
+        site_coords_matrix = torch.tensor(tensors['site_coords_matrix'], dtype=torch.float32) if 'site_coords_matrix' in tensors else None
+        io_site_connect_matrix = torch.tensor(tensors['io_site_connect_matrix'], dtype=torch.float32) if 'io_site_connect_matrix' in tensors else None
+        io_site_coords = torch.tensor(tensors['io_site_coords'], dtype=torch.float32) if 'io_site_coords' in tensors else None
+        
+        place_orientation = PlaceType[params['place_orientation']] if params['place_orientation'] in PlaceType.__members__ else PlaceType.CENTERED
+        grid_type = GridType[params['grid_type']] if params['grid_type'] in GridType.__members__ else GridType.SQUARE
+        
+        default_kwargs = {
+            'num_inst': params['num_inst'],
+            'num_fixed_inst': params['num_fixed_inst'],
+            'num_site': params['num_site'],
+            'num_fixed_site': params['num_fixed_site'],
+            'logic_grid_width': params['logic_grid_width'],
+            'coupling_matrix': coupling_matrix,
+            'site_coords_matrix': site_coords_matrix,
+            'io_site_connect_matrix': io_site_connect_matrix,
+            'io_site_coords': io_site_coords,
+            'constraint_alpha': params['constraint_alpha'],
+            'constraint_beta': params['constraint_beta'],
+            'dev': params['device'],
+            'dtype': torch.float32,
+            'with_io': params['with_io'],
+        }
+        
+        default_kwargs.update(kwargs)
+        
+        return cls(**default_kwargs)
+
     def _initialize(self):
 
         torch.manual_seed(self.seed)
@@ -108,13 +164,27 @@ class FPGAPlacementOptimizer:
             )
             
             h_io = self.h_factor * torch.randn(
-                [self.num_trials, self.fixed_insts_num, self.fixed_insts_num], 
+                [self.num_trials, self.fixed_insts_num, self.fixed_site_num], 
                 device=self.dev, dtype=self.dtype
             )
 
             if not self.manual_grad:
                 h_logic.requires_grad=True
                 h_io.requires_grad=True
+
+            x_logic = self.site_coords_matrix[:, 0]
+            y_logic = self.site_coords_matrix[:, 1]
+
+            Dx_LL = torch.abs(x_logic.unsqueeze(1) - x_logic.unsqueeze(0))
+            Dy_LL = torch.abs(y_logic.unsqueeze(1) - y_logic.unsqueeze(0))
+            self.D_LL = Dx_LL + Dy_LL
+
+            x_io = self.io_site_coords[:, 0]
+            y_io = self.io_site_coords[:, 1]
+
+            Dx_LI = torch.abs(x_logic.unsqueeze(1) - x_io.unsqueeze(0))
+            Dy_LI = torch.abs(y_logic.unsqueeze(1) - y_io.unsqueeze(0))
+            self.D_LI = Dx_LI + Dy_LI
 
             return h_logic, h_io
 
@@ -125,6 +195,10 @@ class FPGAPlacementOptimizer:
 
         if not self.manual_grad:
             h.requires_grad = True
+
+        coords_i = self.site_coords_matrix.unsqueeze(1)
+        coords_j = self.site_coords_matrix.unsqueeze(0)
+        self.D = torch.sum(torch.abs(coords_i - coords_j), dim=2)
 
         return h
 
@@ -149,8 +223,12 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement(
-                self.coupling_matrix, p, self.site_coords_matrix,
-                step, area_width, self.constraint_alpha
+                J=self.coupling_matrix, 
+                p=p, 
+                D=self.D, 
+                step=step, 
+                area_width=area_width, 
+                alpha=self.constraint_alpha
             )
 
             free_energy = loss - entropy_q(p) / self.betas[step]
@@ -169,9 +247,17 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement_with_io(
-                self.coupling_matrix, self.io_site_connect_matrix, p_logic, p_io, self.site_coords_matrix, self.io_site_coords, self.constraint_alpha, self.constraint_beta)
+                J_LL=self.coupling_matrix, 
+                J_LI=self.io_site_connect_matrix, 
+                p_logic=p_logic, 
+                p_io=p_io, 
+                D_LL=self.D_LL, 
+                D_LI=self.D_LI, 
+                alpha=self.constraint_alpha, 
+                beta=self.constraint_beta
+            )
 
-            free_energy = loss - (entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step]
+            free_energy = loss - ((entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step])
             free_energy.backward(gradient=torch.ones_like(free_energy))
             opt.step()
 
@@ -181,9 +267,16 @@ class FPGAPlacementOptimizer:
 
         if self.with_io:
             p = self.iterate_placement_with_io()
-            config, result = infer_placements_with_io(self.coupling_matrix, self.io_site_connect_matrix, p[0],  p[1], self.bbox_length, self.site_coords_matrix, self.io_site_coords)
+            config, result = infer_placements_with_io(self.coupling_matrix, 
+                                                      self.io_site_connect_matrix, 
+                                                      p[0], p[1], 
+                                                      self.logic_grid_width, 
+                                                      D_LL=self.D_LL, D_LI=self.D_LI)
             return config, result
         else:
-            p = self.iterate_placement(self.bbox_length)
-            config, result = infer_placements(self.coupling_matrix, p, self.bbox_length, self.site_coords_matrix)
+            p = self.iterate_placement(self.logic_grid_width)
+            config, result = infer_placements(self.coupling_matrix, 
+                                              p, 
+                                              self.logic_grid_width, 
+                                              D=self.D)
             return config, result
