@@ -43,10 +43,12 @@ class PlacementDrawer:
         if debug_mode:
             self._init_debug_interface()
 
-        path = '/usr/share/fonts/opentype/linux-libertine/LinLibertine_RI.otf'  
-        prop = fm.FontProperties(fname=path)
-
-        plt.rcParams['font.family'] = prop.get_name()
+        path = '/usr/share/fonts/opentype/linux-libertine/LinLibertine_RI.otf'
+        try:
+            prop = fm.FontProperties(fname=path)
+            plt.rcParams['font.family'] = prop.get_name()
+        except (FileNotFoundError, OSError):
+            pass  # Use default font if Linux Libertine not available
 
         plt.rcParams['font.size'] = 12
         plt.rcParams['axes.linewidth'] = 0.8

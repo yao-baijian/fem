@@ -36,6 +36,8 @@ from .objectives import (
     manual_grad_placement,
     export_placement_qubo,
     decode_qubo_solution,
+    solve_placement_sb,
+    solve_placement_cyclic,
 )
 
 __all__ = [
@@ -70,6 +72,8 @@ __all__ = [
     'manual_grad_placement',
     'export_placement_qubo',
     'decode_qubo_solution',
+    'solve_placement_sb',
+    'solve_placement_cyclic',
 
     # Hypergraph balanced min-cut
     'balance_constrain',
