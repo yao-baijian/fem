@@ -74,7 +74,7 @@ drawer = PlacementDrawer(placer=fpga_placer, num_subplots=5, debug_mode=False)
 
 # Create QUBO optimizer
 print("\nINFO: Setting up QUBO optimizer...")
-constraint_alpha = num_inst / 2.0
+constraint_alpha = num_inst * 7.0
 print(f"INFO: Constraint weight (alpha): {constraint_alpha}")
 
 optimizer = FPGAPlacementOptimizer(

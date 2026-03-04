@@ -1,7 +1,9 @@
 """
 Test script for FPGA placement optimizer using QUBO formulation.
 
-This script tests the FPGAPlacementOptimizer on a real FPGA design.
+Compares IO constraint modes:
+  - exactly_one: (u_s - 1)^2 QUBO (default)
+  - at_most_one_sq: squared at-most-one PUBO (same as logic)
 """
 
 import sys
@@ -17,29 +19,31 @@ from ml.dataset import *
 
 SET_LEVEL('INFO')
 
-# instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-#              's713', 's1238', 's1488', 's5378', 's9234', 's15850']
-
-# 'FPGA-example1'
-
 instances = ['c7552']
-            
-num_trials = 5
-num_steps = 200
+
+num_trials = 10
+num_steps = 3000
 dev = 'cpu'
-manual_grad = False
-anneal='lin'
 
 for instance in instances:
     place_type = PlaceType.IO
 
-    optimizer = FPGAPlacementOptimizer.from_saved_params(
-        f'result/{instance}/init_params.json',
-        num_trials=num_trials,
-        num_steps=num_steps,
-        dev=dev
-    )
+    for io_mode in ['exactly_one', 'at_most_one_sq']:
+        print(f"\n{'='*60}")
+        print(f"Instance: {instance}, IO mode: {io_mode}")
+        print(f"{'='*60}")
 
-    config, result = optimizer.optimize()
-    optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
+        optimizer = FPGAPlacementOptimizer.from_saved_params(
+            f'result/{instance}/init_params.json',
+            num_trials=num_trials,
+            num_steps=num_steps,
+            dev=dev,
+            io_mode=io_mode,
+        )
+        constraint_alpha = optimizer.num_inst * 7.0
+        optimizer.constraint_alpha = constraint_alpha
 
+        config, result = optimizer.optimize()
+        optimal_inds = torch.argwhere(result==result.min()).reshape(-1)
+        print(f"\nResult (HPWL): {result}")
+        print(f"Best: {result.min().item():.2f}, Mean: {result.mean().item():.2f}")

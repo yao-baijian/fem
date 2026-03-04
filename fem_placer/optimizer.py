@@ -54,6 +54,7 @@ class FPGAPlacementOptimizer:
             dtype: torch.dtype = torch.float32,
             with_io: bool = False,
             manual_grad: bool = False,
+            io_mode: str = 'exactly_one',
         ):
         """
         Initialize the FPGA placement optimizer with QUBO formulation.
@@ -91,14 +92,15 @@ class FPGAPlacementOptimizer:
             betas = torch.exp(torch.linspace(log(betamin), log(betamax),num_steps))
         elif anneal == 'inverse':
             betas = 1 / torch.linspace(betamax, betamin, num_steps)
-        self.betas = betas.to(self.dtype).to(self.dev) 
-        
+        self.betas = betas.to(self.dtype).to(self.dev)
+
         self.optimizer = optimizer
         self.learning_rate = learning_rate
         self.h_factor = h_factor
         self.seed = seed
         self.with_io = with_io
         self.manual_grad = manual_grad
+        self.io_mode = io_mode
 
         self.D = None
 
@@ -223,11 +225,11 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement(
-                J=self.coupling_matrix, 
-                p=p, 
-                D=self.D, 
-                step=step, 
-                area_width=area_width, 
+                J=self.coupling_matrix,
+                p=p,
+                D=self.D,
+                step=step,
+                area_width=area_width,
                 alpha=self.constraint_alpha
             )
 
@@ -247,14 +249,15 @@ class FPGAPlacementOptimizer:
             opt.zero_grad()
 
             loss = expected_fpga_placement_with_io(
-                J_LL=self.coupling_matrix, 
-                J_LI=self.io_site_connect_matrix, 
-                p_logic=p_logic, 
-                p_io=p_io, 
-                D_LL=self.D_LL, 
-                D_LI=self.D_LI, 
-                alpha=self.constraint_alpha, 
-                beta=self.constraint_beta
+                J_LL=self.coupling_matrix,
+                J_LI=self.io_site_connect_matrix,
+                p_logic=p_logic,
+                p_io=p_io,
+                D_LL=self.D_LL,
+                D_LI=self.D_LI,
+                alpha=self.constraint_alpha,
+                beta=self.constraint_beta,
+                io_mode=self.io_mode
             )
 
             free_energy = loss - ((entropy_q(p_logic) + entropy_q(p_io)) / self.betas[step])

@@ -13,7 +13,6 @@ Key functions:
 """
 
 import torch
-import torch.nn.functional as Func
 from .logger import *
 
 # Global history tracking for optimization visualization
@@ -242,37 +241,60 @@ def get_hpwl_loss_qubo_with_io(J_LL, J_LI,
 
 def get_constraints_loss(p, alpha):
     """
-    Calculate site usage constraint loss.
+    Calculate site usage constraint loss using squared at-most-one (PUBO) penalty.
+
+    PUBO form: sum_s [sum_{i<j} x_{is} x_{js}]^2 = sum_s C(u_s,2)^2
+    Mean-field: sum_s [0.5 * (u_s^2 - sum_i p_{is}^2)]^2
+
+    The squared form naturally gates the gradient — near-zero in the diffuse
+    phase, strong at overlaps — giving softplus-like optimization behavior
+    while remaining a valid PUBO energy.
 
     Args:
         p: Probability distribution [batch_size, num_instances, num_sites]
+        alpha: Constraint weight
 
     Returns:
         site_constraint: Constraint loss for each batch [batch_size]
     """
     site_usage = torch.sum(p, dim=1)
-    site_constraint = torch.sum(30 * Func.softplus(site_usage - 1)**2, dim=1)
+    site_usage_sq = torch.sum(p ** 2, dim=1)
+    overlap = 0.5 * (site_usage ** 2 - site_usage_sq)
+    site_constraint = torch.sum(overlap ** 2, dim=1)
     return alpha * site_constraint
 
 
-def get_constraints_loss_with_io(p_logic, p_io, alpha, beta):
+def get_constraints_loss_with_io(p_logic, p_io, alpha, beta, io_mode='exactly_one'):
     """
     Calculate constraint loss for both logic and IO placements.
 
     Args:
         p_logic: Logic probability distribution [batch_size, num_logic, num_logic_sites]
         p_io: IO probability distribution [batch_size, num_io, num_io_sites]
+        alpha: Logic constraint weight
+        beta: IO constraint weight
+        io_mode: 'exactly_one' for (u-1)^2 QUBO, 'at_most_one_sq' for squared at-most-one PUBO
 
     Returns:
         constraint_loss: Total constraint loss [batch_size]
     """
-    coeff_1 = p_logic.shape[1] / 2
+    # Logic: squared at-most-one (PUBO) — [sum_{i<j} p_{is} p_{js}]^2
     logic_site_usage = torch.sum(p_logic, dim=1)
-    logic_constraint = torch.sum(coeff_1 * Func.softplus(logic_site_usage - 1)**2, dim=1)
+    logic_site_usage_sq = torch.sum(p_logic ** 2, dim=1)
+    logic_overlap = 0.5 * (logic_site_usage ** 2 - logic_site_usage_sq)
+    logic_constraint = torch.sum(logic_overlap ** 2, dim=1)
 
-    coeff_2 = p_io.shape[1] / 20
-    io_site_usage = torch.sum(p_io, dim=1)
-    io_constraint = torch.sum(coeff_2 * Func.softplus(io_site_usage - 1)**2, dim=1)
+    if io_mode == 'at_most_one_sq':
+        # IO: squared at-most-one (PUBO), same as logic
+        io_site_usage = torch.sum(p_io, dim=1)
+        io_site_usage_sq = torch.sum(p_io ** 2, dim=1)
+        io_overlap = 0.5 * (io_site_usage ** 2 - io_site_usage_sq)
+        io_constraint = torch.sum(io_overlap ** 2, dim=1)
+    else:
+        # IO: standard QUBO (usage-1)², penalizes both over and under-occupation
+        io_site_usage = torch.sum(p_io, dim=1)
+        io_constraint = torch.sum((io_site_usage - 1)**2, dim=1)
+
     return alpha * logic_constraint + beta * io_constraint
 
 # 
@@ -302,9 +324,12 @@ def manual_grad_hpwl_loss(p, W, D):
     return h_grad
 
 
-def manual_grad_constraint_loss(p, lambda_constraint=30.0):
+def manual_grad_constraint_loss(p, lambda_constraint=1.0):
     """
-    Compute manual gradient of constraint loss.
+    Compute manual gradient of squared at-most-one constraint loss.
+
+    Constraint: sum_s [0.5 * (u_s^2 - S_2)]^2
+    Gradient w.r.t. p_{is}: (u_s^2 - S_2) * (u_s - p_{is})
 
     Args:
         p: Probability distribution [batch_size, num_instances, num_sites]
@@ -313,14 +338,10 @@ def manual_grad_constraint_loss(p, lambda_constraint=30.0):
     Returns:
         h_grad: Gradient [batch_size, num_instances, num_sites]
     """
-    site_occupancy = torch.sum(p, dim=1)
-    excess = site_occupancy - 1.0
-
-    softplus_val = Func.softplus(excess)
-    sigmoid_val = torch.sigmoid(excess)
-
-    site_grad = 2 * lambda_constraint * softplus_val * sigmoid_val
-    h_grad = site_grad.unsqueeze(1).repeat(1, p.shape[1], 1)
+    site_occupancy = torch.sum(p, dim=1)  # [batch, num_sites]
+    site_occupancy_sq = torch.sum(p ** 2, dim=1)  # [batch, num_sites]
+    overlap = site_occupancy ** 2 - site_occupancy_sq  # [batch, num_sites]
+    h_grad = lambda_constraint * (overlap.unsqueeze(1) * (site_occupancy.unsqueeze(1) - p))
 
     return h_grad
 
@@ -352,13 +373,11 @@ def manual_grad_placement(p, J, site_coords_matrix, lambda_constraint=30.0):
     J_batch = J_upper.unsqueeze(0).expand(batch_size, -1, -1)
     dE_hpwl_dp = torch.bmm(J_batch, PD)
 
-    # Constraint gradient
+    # Squared at-most-one gradient: (u_s^2 - S_2) * (u_s - p_{is})
     site_occupancy = torch.sum(p, dim=1)
-    excess = site_occupancy - 1.0
-    softplus_val = Func.softplus(excess)
-    sigmoid_val = torch.sigmoid(excess)
-    site_grad = 2 * lambda_constraint * softplus_val * sigmoid_val
-    dE_constraint_dp = site_grad.unsqueeze(1).expand(-1, N, -1)
+    site_occupancy_sq = torch.sum(p ** 2, dim=1)
+    overlap = site_occupancy ** 2 - site_occupancy_sq
+    dE_constraint_dp = lambda_constraint * (overlap.unsqueeze(1) * (site_occupancy.unsqueeze(1) - p))
 
     dE_dp = dE_hpwl_dp + dE_constraint_dp
 
@@ -408,10 +427,11 @@ def expected_fpga_placement(J, p, D, step, area_width, alpha):
     return hpwl + constrain_loss
 
 
-def expected_fpga_placement_with_io(J_LL, J_LI, 
-                                    p_logic, p_io, 
+def expected_fpga_placement_with_io(J_LL, J_LI,
+                                    p_logic, p_io,
                                     D_LL, D_LI,
-                                    alpha, beta):
+                                    alpha, beta,
+                                    io_mode='exactly_one'):
     """
     Calculate expected placement loss including IO connections.
 
@@ -422,12 +442,13 @@ def expected_fpga_placement_with_io(J_LL, J_LI,
         p_io: IO probability distribution
         D_LL: Logic-logic distance matrix
         D_LI: Logic-IO distance matrix
+        io_mode: 'exactly_one' or 'at_most_one_sq'
 
     Returns:
         total_loss: Combined loss [batch_size]
     """
     hpwl = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, D_LL, D_LI)
-    constrain_loss = get_constraints_loss_with_io(p_logic, p_io, alpha, beta)
+    constrain_loss = get_constraints_loss_with_io(p_logic, p_io, alpha, beta, io_mode=io_mode)
     return hpwl + constrain_loss
     # return constrain_loss
 
@@ -965,12 +986,15 @@ def infer_placements(J, p, area_width, D):
     return inst_coords, result
 
 
-def infer_placements_with_io(J_LL, J_LI, 
-                             p_logic, p_io, 
-                             area_width, 
+def infer_placements_with_io(J_LL, J_LI,
+                             p_logic, p_io,
+                             area_width,
                              D_LL, D_LI):
     """
     Infer final placements including IO from probability distributions.
+
+    Uses argmax for logic (low utilization) and linear assignment for IO
+    (high utilization) to avoid overlaps.
 
     Args:
         J_LL: Logic-logic coupling matrix
@@ -978,22 +1002,55 @@ def infer_placements_with_io(J_LL, J_LI,
         p_logic: Logic probability distribution
         p_io: IO probability distribution
         area_width: Width of the placement area
-        logic_site_coords_matrix: Logic site coordinates
-        io_site_coords_matrix: IO site coordinates
+        D_LL: Logic-logic distance matrix
+        D_LI: Logic-IO distance matrix
 
     Returns:
         coords: List of [logic_coords, io_coords]
         hpwl: HPWL values [batch_size]
     """
+    from scipy.optimize import linear_sum_assignment
+
+    # Logic: argmax (low utilization, overlap rare)
     logic_inst_indices = torch.argmax(p_logic, dim=2)
-    io_inst_indices = torch.argmax(p_io, dim=2)
     logic_inst_coords = get_inst_coords_from_index(logic_inst_indices, area_width)
+
+    # IO: linear assignment (high utilization, guarantees no overlap)
+    batch_size = p_io.shape[0]
+    io_inst_indices = torch.zeros(batch_size, p_io.shape[1], dtype=torch.long)
+    for b in range(batch_size):
+        cost = -p_io[b].detach().numpy()
+        _, col_ind = linear_sum_assignment(cost)
+        io_inst_indices[b] = torch.tensor(col_ind)
     io_inst_coords = get_io_coords_from_index(io_inst_indices)
 
-    duplicate_count, unique_coords, counts = count_duplicate_coords(io_inst_coords)
-    INFO(f"Total duplicate sum: {duplicate_count}")
+    logic_dup, _, _ = count_duplicate_coords(logic_inst_coords)
+    io_dup, _, _ = count_duplicate_coords(io_inst_coords)
+    INFO(f"Logic duplicate: {logic_dup}, IO duplicate: {io_dup}")
 
-    result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
-                                        p_logic, p_io, 
+    # p_io 收敛诊断
+    p0 = p_io[0].detach()
+    max_probs = p0.max(dim=1).values
+    argmax_sites = p0.argmax(dim=1)
+    print(f"IO p_max: min={max_probs.min():.4f}, mean={max_probs.mean():.4f}, max={max_probs.max():.4f}")
+    print(f"IO argmax sites used: {len(argmax_sites.unique())}/{p0.shape[1]}")
+
+    # 按连接度分组看收敛情况
+    io_degree = (J_LI != 0).sum(dim=0)  # [315]
+    for lo, hi in [(0, 0), (1, 2), (3, 5), (6, 100)]:
+        mask = (io_degree >= lo) & (io_degree <= hi)
+        if mask.sum() > 0:
+            group_pmax = max_probs[mask]
+            print(f"  IO degree [{lo}-{hi}]: count={mask.sum().item()}, p_max mean={group_pmax.mean():.4f}")
+
+    # constraint vs HPWL 量级对比
+    io_su = p0.sum(dim=0)
+    io_constr_val = ((io_su - 1)**2).sum().item()
+    hpwl_val = get_hpwl_loss_qubo_with_io(J_LL, J_LI, p_logic, p_io, D_LL, D_LI)
+    print(f"\n  IO constraint value (raw): {io_constr_val:.2f}, x beta(30) = {io_constr_val*30:.2f}")
+    print(f"  HPWL value: {hpwl_val[0].item():.2f}")
+
+    result = get_hpwl_loss_qubo_with_io(J_LL, J_LI,
+                                        p_logic, p_io,
                                         D_LL, D_LI)
     return [logic_inst_coords, io_inst_coords], result
