@@ -39,6 +39,9 @@ class NetManager:
 
         self.debug_src_root = "result"
         self.hpwl_calculator = HPWLCalculator(device, debug=debug)
+
+    def has_net(self, site_name):
+        return site_name in self.site_to_nets
     
     def set_debug_path(self, result_dir='result', instance_name=None):
         self.debug_src_root = os.path.join(result_dir, instance_name) if instance_name else result_dir
@@ -57,9 +60,7 @@ class NetManager:
             self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, False)
 
         hpwl = self.hpwl_calculator.get_hpwl()
-        total_hpwl = hpwl['hpwl']
-        total_hpwl_no_io = hpwl['hpwl_no_io']
-        INFO(f"Nets num: {len(self.nets)}, total hpwl: {total_hpwl:.2f}, without io: {total_hpwl_no_io:.2f} ")
+        INFO(f"Nets num: {len(self.nets)}, total hpwl: {hpwl['hpwl']:.2f}, without io: {hpwl['hpwl_no_io']:.2f} ")
         
         # Estimate logic depth from the design
         self._estimate_logic_depth()
@@ -68,7 +69,7 @@ class NetManager:
         if self.debug:
             self.save_net_debug_info()
 
-        return total_hpwl, total_hpwl_no_io
+        return hpwl
     
     def get_net_degrees(self) -> tuple[int, float]:
         return self.max_degree, self.avg_degree
@@ -263,7 +264,10 @@ class NetManager:
               f" {len(self.io_to_site_connectivity)} io-to-site routes",
               f" {len(self.net_to_sites)} inter-tile routes")
 
-        return len(self.site_to_site_connectivity), len(self.nets)
+        return {
+            'logic_net_num': len(self.site_to_site_connectivity),
+            'total_net_num': len(self.nets)
+            }
 
     def _record_connectivity(self, logic_sites: Set[str], io_sites: Set[str]):
         logic_sites_list = list(logic_sites)
@@ -463,6 +467,8 @@ class NetManager:
                                      include_io: bool = True) -> float:
         instance_hpwl = 0.0
         site_name = self.get_site_inst_name_by_id_func(instance_id)
+        if not self.has_net(site_name):   #TODO some of the IO site has no net out, always pad input to 0, need check
+            return instance_hpwl
         net_group = self.site_to_nets[site_name]
         instance_nets_connection = []
         instance_coords = self.map_coords_to_instance_func(coords, io_coords, include_io)

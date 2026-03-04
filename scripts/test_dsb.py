@@ -27,7 +27,7 @@ max_steps = 10000
 lam = 50.0        # one-hot constraint weight
 mu = 50.0         # at-most-one constraint weight
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-dcp_file = './vivado/output_dir/post_impl.dcp'
+dcp_file = './vivado/output_dir/c7552/post_impl.dcp'
 output_file = 'optimized_placement_dsb.dcp'
 
 # Initialize FPGA placer

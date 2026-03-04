@@ -430,7 +430,7 @@ class FpgaPlacer:
         self.available_slices_ml = list(device.getAllCompatibleSites(SiteTypeEnum.SLICEL))
         self.available_slices_ml.extend(list(device.getAllCompatibleSites(SiteTypeEnum.SLICEM)))
         self.cells = design.getCells()
-        _, vivado_hpwl = self.net_manager.analyze_design_hpwl(design)
+        vivado_hpwl = self.net_manager.analyze_design_hpwl(design)
         self.get_optimizable_insts(design) 
         self.get_fixed_insts(design)         
         self.get_other_insts(design)      
@@ -439,14 +439,19 @@ class FpgaPlacer:
         self._init_clock_buffer_area()
         self.get_available_target_sites(device)
         self._map_site_to_id()
-        site_net_num, total_net_num = self.net_manager.analyze_nets(self.opti_insts_num, self.avail_sites_num, self.fixed_insts_num)
+        net_num = self.net_manager.analyze_nets(self.opti_insts_num, self.avail_sites_num, self.fixed_insts_num)
         self.random_initial_placement(design)
         
         self._get_place_area_coords()
         self._get_io_area_coords()
         self._get_combined_coords()
 
-        return vivado_hpwl, self.opti_insts_num, site_net_num, total_net_num
+        inst_num = {
+            'logic_inst_num': self.opti_insts_num,
+            'io_inst_num': self.fixed_insts_num
+            }
+
+        return vivado_hpwl, inst_num, net_num
 
     def save_init_params(self, instance_name, result_dir='result'):
         os.makedirs(os.path.join(result_dir, instance_name), exist_ok=True)

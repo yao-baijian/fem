@@ -27,7 +27,7 @@ max_iters = 200
 k = 60          # instances per iteration
 k_u = 30        # unbound sites per iteration
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-dcp_file = './vivado/output_dir/post_impl.dcp'
+dcp_file = './vivado/output_dir/c7552/post_impl.dcp'
 output_file = 'optimized_placement_cyclic.dcp'
 
 # Initialize FPGA placer

@@ -308,19 +308,52 @@ class PlacementDrawer:
             self.axes.append(ax)
             site_coords = placement_history[plot_idx][0]
             # Setup plot
-
+            
             real_logic_coords = self.logic_grid.to_real_coords_tensor(site_coords)
             self.setup_plot(ax)
             self._draw_all_base_grids(ax, include_io=False)
             self._draw_instances(ax, real_logic_coords, 'logic', label=False)
-            ax.set_title(f'Step {step_label}', fontsize=12, fontweight='bold')
+            
+            # 去掉坐标轴边框和刻度
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            
+            ax.set_title(f'Step {step_label}', fontsize=12, fontweight='bold', y=0)
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.tick_params(axis='both', which='both', length=0)
 
-        self.figs.tight_layout()
+        self.figs.subplots_adjust(wspace=0, hspace=0.05, left=0, right=0.8, bottom=0.1, top=0.95)
+
+        # 在最后一张图的右上角添加图例
+        last_ax = self.axes[-1]
+        
+        # 创建自定义图例元素
+        from matplotlib.patches import Patch
+        import matplotlib.patches as mpatches
+        
+        legend_elements = [
+            Patch(facecolor='lightgray', edgecolor='gray', label='Empty Site'),
+            Patch(facecolor='blue', edgecolor='darkblue', label='Placed Site'),
+            Patch(facecolor='red', edgecolor='darkred', label='Overlap Site')
+        ]
+        
+        # 在外部添加图例（右上角）
+        last_ax.legend(handles=legend_elements, loc='upper right', 
+                    bbox_to_anchor=(0.95, 0.95), fontsize=10, 
+                    frameon=True, fancybox=True, shadow=True)
+
+        # self.figs.tight_layout()
         self.figs.canvas.draw()
         plt.show(block=False)
         plt.pause(5)
 
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
     def plot_fpga_placement_loss(self, save_path=None, sigma=1.5):
         """

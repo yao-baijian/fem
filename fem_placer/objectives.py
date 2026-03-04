@@ -14,6 +14,7 @@ Key functions:
 
 import torch
 import torch.nn.functional as Func
+from .logger import *
 
 # Global history tracking for optimization visualization
 _hpwl_loss_history = []
@@ -990,7 +991,7 @@ def infer_placements_with_io(J_LL, J_LI,
     io_inst_coords = get_io_coords_from_index(io_inst_indices)
 
     duplicate_count, unique_coords, counts = count_duplicate_coords(io_inst_coords)
-    print(f"Total duplicate sum: {duplicate_count}")
+    INFO(f"Total duplicate sum: {duplicate_count}")
 
     result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
                                         p_logic, p_io, 

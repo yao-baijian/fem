@@ -22,12 +22,11 @@ from ml.predict import predict_alpha
 
 SET_LEVEL('WARNING')
 
-# instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-#              's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+             's1238', 's1488', 's5378', 's9234', 's15850']
 
 # 'FPGA-example1'
-
-instances = ['c7552']
+# instances = ['c2670']
             
 draw_evolution = False
 draw_loss_function = False
@@ -36,20 +35,25 @@ num_trials = 5
 num_steps = 200
 dev = 'cpu'
 manual_grad = False
-anneal='inverse'
+anneal='lin'
+
+print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Site/Total':<14} {'Overlap':<8} "
+      f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12}")
 
 for instance in instances:
-    place_type = PlaceType.CENTERED
+    place_type = PlaceType.IO
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
-                            GridType.RECTAN,
+                            GridType.SQUARE,
                             0.4,
                             debug,
                             device=dev)
     
     fpga_placer.set_instance_name(instance)
     
-    vivado_hpwl, site_num, site_net_num, total_net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
+    vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
+    net_ratio = f"{net_num['logic_net_num']}/{net_num['total_net_num']}"
+
     area_size = fpga_placer.grids['logic'].area
     global_drawer = PlacementDrawer(placer=fpga_placer)
     
@@ -109,19 +113,20 @@ for instance in instances:
         placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids, real_io_coords, io_ids, include_io = True)
         all_coords = torch.cat([placement_legalized[0], placement_legalized[1]], dim=0)
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, all_coords)
+        print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
+            f"{fem_hpwl_initial['hpwl']:<18.2f} {fem_hpwl_final['hpwl']:<16.2f} {vivado_hpwl['hpwl']:<12.2f}")
     else:
         real_logic_coords = fpga_placer.get_grid('logic').to_real_coords_tensor(config[optimal_inds[0]])
         placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids)
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, (placement_legalized[0]))
-
-    print(f"{'Benchmarks':<12} {instance:<10} {site_num:<6} {f'{site_net_num}/{total_net_num}':<14} {overlap:<8} "
-            f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl:<12.2f}")
+        print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
+            f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl['hpwl_no_io']:<12.2f}")
     
     if draw_loss_function:
-        global_drawer.plot_fpga_placement_loss('result/hpwl_loss.png')
+        global_drawer.plot_fpga_placement_loss(f'result/{instance}/hpwl_loss.png')
 
     if draw_evolution:
-        global_drawer.draw_multi_step_placement('result/placement_evolution.png')
+        global_drawer.draw_multi_step_placement(f'result/{instance}/placement_evolution.png')
 
     if draw_final_placement:
         global_drawer.draw_place_and_route(placement_legalized[0], routes, None, False, 1000, title_suffix="Final Placement with Routing")
