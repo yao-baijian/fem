@@ -15,8 +15,7 @@ from ml.dataset import *
 
 SET_LEVEL('WARNING')
 
-instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-             's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+instances = ['FPGA-example1']
 
 # 'FPGA-example1'
             
@@ -35,7 +34,7 @@ for instance in instances:
                             debug,
                             device=dev)
     
-    vivado_hpwl, site_num, site_net_num, total_net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
+    vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
     fpga_placer.set_alpha(30)
     fpga_placer.set_beta(30)
     fpga_placer.save_init_params(instance_name=instance)

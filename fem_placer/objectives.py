@@ -898,7 +898,7 @@ def solve_placement_cyclic(
 
         if len(cycles) == 0:
             if verbose:
-                print(f"  iter {it}: no cycles sampled, skipping")
+                WARNING(f"Iteration {it}: no cycles sampled, skipping")
             continue
 
         # Build sub-QUBO
@@ -924,12 +924,12 @@ def solve_placement_cyclic(
 
         if verbose:
             n_applied = int(alpha.sum().item())
-            print(f"  iter {it}: cost={current_cost:.4f}, best={best_cost:.4f}, "
+            INFO(f"Iter {it}: cost={current_cost:.4f}, best={best_cost:.4f}, "
                   f"cycles={len(cycles)}, applied={n_applied}")
 
         if patience_counter >= patience:
             if verbose:
-                print(f"  Early stop at iter {it} (patience={patience})")
+                INFO(f"Early stop at iter {it} (patience={patience})")
             break
 
     # Return best solution
