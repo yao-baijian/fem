@@ -20,13 +20,20 @@ from fem_placer.config import *
 from ml.dataset import *
 from ml.predict import predict_alpha
 
-SET_LEVEL('WARNING')
+SET_LEVEL('INFO')
 
-instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-             's1238', 's1488', 's5378', 's9234', 's15850']
+# instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+#              's1238', 's1488', 's5378', 's9234', 's15850']
 
-# 'FPGA-example1'
-# instances = ['c2670']
+# ''
+# instances = ['FPGA-example2']
+# instances = ['c1355_boundary']
+
+# instances = ['bgm', 'blob_merge', 'boundtop', 'ch_intrinsics', 'diffeq', 'diffeq2', 'LU8PEEng', 
+#             'LU32PEEng', 'mcml', 'mkDelayWorker32B', 'mkPktMerge', 'mkSMAdapter4B', 'or1200', 
+#             'raygentop', 'sha', 'stereovision0', 'stereovision1', 'stereovision2', 'stereovision3']
+
+instances = ['bgm', 'RLE_BlobMerging', 'paj_boundtop_hierarchy_no_mem']
             
 draw_evolution = False
 draw_loss_function = False
@@ -41,7 +48,7 @@ print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Site/To
       f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12}")
 
 for instance in instances:
-    place_type = PlaceType.IO
+    place_type = PlaceType.CENTERED
     debug = False
     fpga_placer = FpgaPlacer(place_type, 
                             GridType.SQUARE,
@@ -72,8 +79,8 @@ for instance in instances:
     # fpga_placer.set_alpha(30)
     
     optimizer = FPGAPlacementOptimizer(
-        num_inst=fpga_placer.opti_insts_num,
-        num_fixed_inst=fpga_placer.fixed_insts_num,
+        num_inst=fpga_placer.instances['logic'].num,
+        num_fixed_inst=fpga_placer.instances['io'].num,
         num_site=fpga_placer.get_grid('logic').area,
         num_fixed_site=fpga_placer.get_grid('io').area_width,
         logic_grid_width=fpga_placer.get_grid('logic').area_width,

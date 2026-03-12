@@ -197,6 +197,53 @@ def get_hpwl_loss_qubo(J, p, D):
     return 0.5 * torch.sum(E_matrix * J.unsqueeze(0), dim=(1, 2))
 
 
+def get_hpwl_loss_qubo_sparse_accel(J, p, D):
+    """
+    Calculate HPWL loss using block-sparse matrix multiplication acceleration.
+    """
+    
+    batch_size, N, M = p.shape
+    device = p.device
+    
+    indices = J.indices()
+    values = J.values()
+    
+    # 预构建块对角稀疏矩阵 indices
+    # shape: (2, batch_size * nnz)
+    offsets = torch.arange(batch_size, device=device) * N
+    # indices[0] shape: (nnz), offsets shape: (batch_size)
+    # broadcasting: (batch_size, nnz) -> flatten
+    
+    rows = (indices[0].unsqueeze(0) + offsets.unsqueeze(1)).flatten()
+    cols = (indices[1].unsqueeze(0) + offsets.unsqueeze(1)).flatten()
+    vals = values.repeat(batch_size)
+    
+    block_indices = torch.stack([rows, cols])
+    block_shape = (batch_size * N, batch_size * N)
+    
+    # 构建块对角稀疏矩阵 B_J
+    # [batch*N, batch*N]
+    B_J = torch.sparse_coo_tensor(block_indices, vals, block_shape, device=device)
+    
+    # reshape p to [batch*N, M]
+    p_flat = p.reshape(batch_size * N, M)
+    
+    # 1. Sparse MM: B_p = B_J @ p_flat ( [batch*N, batch*N] @ [batch*N, M] -> [batch*N, M] )
+    B_p = torch.sparse.mm(B_J, p_flat)
+    
+    # Reshape back to batch: [batch, N, M]
+    B_p_batch = B_p.reshape(batch_size, N, M)
+    
+    # 2. Dense BMM: C = p^T @ B_p_batch ( [batch, M, N] @ [batch, N, M] -> [batch, M, M] )
+    p_T = p.transpose(1, 2)
+    C = torch.bmm(p_T, B_p_batch)
+    
+    # 3. Element-wise mul & sum: sum( D * C )
+    loss = 0.5 * torch.sum(D * C, dim=(1, 2))
+    
+    return loss
+
+
 def get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
                                p_logic, p_io,
                                D_LL, D_LI):

@@ -56,7 +56,7 @@ def extract_features_from_placer(
         Dictionary with all features and selection fields
     """
     logic_grid = placer.get_grid("logic")
-    utilization = placer.opti_insts_num / (logic_grid.area_length * logic_grid.area_width)
+    utilization = placer.instances['logic'].num / (logic_grid.area_length * logic_grid.area_width)
 
     max_degree, avg_degree = placer.net_manager.get_net_degrees()
     net_count=len(placer.net_manager.nets)
@@ -64,8 +64,8 @@ def extract_features_from_placer(
 
     row = {
         # Feature fields (for training)
-        "opti_insts_num": int(placer.opti_insts_num),
-        "avail_sites_num": int(placer.avail_sites_num),
+        "opti_insts_num": int(placer.instances['logic'].num),
+        "avail_sites_num": int(placer.instances['sites'].num),
         "utilization": float(utilization),
         "logic_area_length": int(logic_grid.area_length),
         "logic_area_width": int(logic_grid.area_width),

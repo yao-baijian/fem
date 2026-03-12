@@ -14,6 +14,10 @@ class GridType(Enum):
     RECTAN = 2
     OTHER = 3
 
+class PlaceMode(Enum):
+    NORMAL = 1
+    VIRTUAL_NODE = 2
+
 SLICE_SITE_ENUM = [SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM]
 
 IO_SITE_ENUM = [

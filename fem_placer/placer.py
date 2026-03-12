@@ -11,6 +11,7 @@ import rapidwright
 from contextlib import contextmanager
 from fem_placer.net import NetManager
 from fem_placer.grid import Grid
+from fem_placer.instance import InstanceGroup
 from fem_placer.config import *
 from fem_placer.logger import INFO, WARNING, ERROR
 
@@ -25,20 +26,20 @@ class FpgaPlacer:
     def __init__(self, 
                  place_orientation = PlaceType.CENTERED, 
                  grid_type = GridType.SQUARE,
+                 place_mode = PlaceMode.NORMAL,
                  utilization_factor = 0.3,
                  debug = True,
                  device = 'cpu'):
         
         self.total_insts_num = 0
-        self.opti_insts_num = 0
-        self.fixed_insts_num = 0
         self.other_insts_num = 0
-        self.avail_sites_num = 0
 
-        self.optimizable_insts = []
-        self.fixed_insts = []
-        self.clock_insts = []
-        self.available_sites = []
+        self.instances = {
+                'logic': InstanceGroup('logic', device),
+                'io': InstanceGroup('io', device),
+                'clock': InstanceGroup('clock', device),
+                'sites': InstanceGroup('sites', device)
+        }
 
         self.cells = []
         
@@ -50,26 +51,16 @@ class FpgaPlacer:
 
         self.unfixed_placements = {}
         self.fixed_placements = {}
-        self.optimizable_site_inst_to_id = {} 
-        self.available_site_to_id = {}    
-        self.optimizable_id_to_site_inst = {}
-        self.available_id_to_site = {}   
-        
-        self.logic_ids = None
-        self.io_ids = None
-
-        self.fixed_site_to_id = {}    
-        self.fixed_id_to_site = {}
         self.place_orientation = place_orientation
         self.grid_type = grid_type
+        self.place_mode = place_mode
         self.utilization_factor = utilization_factor
         self.debug = debug
         self.net_manager = NetManager(self.get_site_inst_id_by_name, 
-                                      self.get_site_inst_name_by_id,
+                                      self.get_inst_name_by_id,
                                       self.map_coords_to_instance,
                                       debug=self.debug,
                                       device=device)
-        
         
         self.logic_site_coords = None
         self.site_coords_all = None
@@ -140,64 +131,79 @@ class FpgaPlacer:
                 pass
         
     def get_site_inst_id_by_name(self, site_name):
-        if site_name in self.optimizable_site_inst_to_id:
-            return self.optimizable_site_inst_to_id.get(site_name)
-        elif site_name in self.fixed_site_to_id:
-            return self.fixed_site_to_id.get(site_name) + self.opti_insts_num
+        if site_name in self.instances['logic'].name_to_id:
+            return self.instances['logic'].name_to_id.get(site_name)
+        elif site_name in self.instances['io'].name_to_id:
+            return self.instances['io'].get_id(site_name) + self.instances['logic'].num
         else:
             WARNING(f"Cannot find site_inst id for site_name: {site_name}")
             return None
         
-    def get_site_inst_name_by_id(self, id):
-        if id in self.optimizable_id_to_site_inst:
-            return self.optimizable_id_to_site_inst.get(id)
-        elif (id - self.opti_insts_num) in self.fixed_id_to_site:
-            return self.fixed_id_to_site.get(id - self.opti_insts_num)
+    def get_inst_name_by_id(self, id):
+        if id < self.instances['logic'].num:
+            return self.instances['logic'].id_to_name.get(id)
+        elif (id - self.instances['logic'].num) < self.instances['io'].num:
+            return self.instances['io'].get_name(id - self.instances['logic'].num)
         else:
             WARNING(f"Cannot find site_inst name for id: {id}")
             return None
 
     def get_site_id_by_name(self, site_name):
-        return self.available_site_to_id.get(site_name)
+        return self.instances['sites'].name_to_id.get(site_name)
     
     def get_site_name_by_id(self, id):
-        return self.available_id_to_site.get(id)
+        return self.instances['sites'].id_to_name.get(id)
 
-    def get_optimizable_insts(self, design):
-        
-        for site in design.getSiteInsts():
-            site_type = site.getSiteTypeEnum()
+    def classify_instances(self, design):
 
-            if site_type in SLICE_SITE_ENUM:
-                self.optimizable_insts.append(site)
+        # 1. Collect instances include IO (IOB), not used in module run
+
+        if self.place_mode == PlaceMode.NORMAL:
+            for site_inst in design.getSiteInsts():
+                site_type = site_inst.getSiteTypeEnum()
+                if site_type in SLICE_SITE_ENUM:
+                    self.instances['logic'].add(site_inst)
+                elif site_type in IO_SITE_ENUM:
+                    self.instances['io'].add(site_inst)
+                elif site_type in OTHER_SITE_ENUM:
+                    continue
+                elif site_inst not in self.instances['logic'].insts and site_inst not in self.instances['io'].insts:
+                    WARNING(f"Site {site_inst.getName()} with type {site_type} is not classified as optimizable or fixed.")
+
+        # 2. Collect instances boundary node as virtual (IO), used in module run
+        elif self.place_mode == PlaceMode.VIRTUAL_NODE:
+            
+
+            for site_inst in design.getSiteInsts():
+                site_type = site_inst.getSiteTypeEnum()
+                
+                # Check for regular IOs, and other sites
+                if site_type in IO_SITE_ENUM or site_type in OTHER_SITE_ENUM:
+                     continue
+
+                # Check for generic IOs (via wrapper/boundary registers)
+                is_boundary = False
+                if site_type in SLICE_SITE_ENUM:
+                    for cell in site_inst.getCells():
+                        # Detect boundary registers by name convention
+                        if "u_io_reg_" in cell.getName():
+                            is_boundary = True
+                            break
+                
+                if is_boundary:
+                    self.instances['io'].add(site_inst)
+                elif site_type in SLICE_SITE_ENUM:
+                    self.instances['logic'].add(site_inst)
+                else:
+                    if not is_boundary:
+                         WARNING(f'Cannot orient site type, site: {site_inst.getName()}, type: {site_type}')
+
+        # self.opti_insts_num will act as property later or adjust code below
     
-    def get_fixed_insts(self, design):
-        
-        for site in design.getSiteInsts():
-            site_type = site.getSiteTypeEnum()
-            
-            if site_type in IO_SITE_ENUM:
-                self.fixed_insts.append(site)
-
-    def get_other_insts(self, design):
-        
-        for site in design.getSiteInsts():
-            site_type = site.getSiteTypeEnum()
-            
-            if site_type in OTHER_SITE_ENUM:
-                # self.fixed_insts.append(site)
-                continue
-
-            elif site not in self.optimizable_insts and site not in self.fixed_insts:
-                WARNING(f'Cannot orient site type, site: {site.getName()}, type: {site.getSiteTypeEnum()}')
-
-    def get_available_target_sites(self, device):
-        
+    def get_available_target_sites(self, device):        
         for site in device.getAllSites():
             site_x = site.getInstanceX()
             site_y = site.getInstanceY()
-
-            # print(f'site: {site.getName()}, type: {site.getSiteTypeEnum()}, x: {site_x}, y: {site_y}')
             
             if (self.grids['logic'].start_x <= site_x <= self.grids['logic'].end_x and 
                 self.grids['logic'].start_y <= site_y <= self.grids['logic'].end_y ):
@@ -205,72 +211,48 @@ class FpgaPlacer:
                 site_type = site.getSiteTypeEnum()
 
                 if site_type in SLICE_SITE_ENUM:
-                    self.available_sites.append(site)
+                    self.instances['sites'].add(site)
         
-        if len(self.available_sites) < len(self.optimizable_insts):
-            WARNING(f"Available sites({len(self.available_sites)}) less than optimizable sites({len(self.optimizable_insts)})")
+        if self.instances['sites'].num < self.instances['logic'].num:
+            WARNING(f"Available sites({self.instances['sites'].num}) less than optimizable sites({self.instances['logic'].num})")
             # TODO add sites here
-            
-        self.avail_sites_num = len(self.available_sites)
         
     def get_ids(self):
-        return self.logic_ids, self.io_ids
+        return self.instances['logic'].ids, self.instances['io'].ids
 
     def _map_site_to_id(self):
 
-        for idx, site_inst in enumerate(self.optimizable_insts): 
-            site_name = site_inst.getName()
-            self.optimizable_site_inst_to_id[site_name] = idx
-            self.optimizable_id_to_site_inst[idx] = site_name
+        offset = self.instances['logic'].create_mappings(0)
+        self.instances['io'].create_mappings(0)
+        self.instances['sites'].create_mappings(0)
         
-        self.logic_ids = torch.arange(self.opti_insts_num, device=self.device)
-
-        for idx, site_inst in enumerate(self.fixed_insts): 
-            site_name = site_inst.getName()
-            self.fixed_site_to_id[site_name] = idx
-            self.fixed_id_to_site[idx] = site_name
-            
-        self.io_ids = torch.arange(self.opti_insts_num, self.opti_insts_num + self.fixed_insts_num, device=self.device)
-        
-        for idx, site in enumerate(self.available_sites):
-            site_name = site.getName()
-            self.available_site_to_id[site_name] = idx
-            self.available_id_to_site[idx] = site_name
-
-        with open(self.get_debug_output_path('optimizable_site_mapping_debug.tsv'), 'w') as f:
+        # Write debug files
+        with open(self.get_debug_output_path('logic_inst_mapping_debug.tsv'), 'w') as f:
             f.write("Type\tSiteInst_Name\tID\n")
-            for idx in range(len(self.optimizable_insts)):
-                site_name = self.optimizable_id_to_site_inst[idx]
+            for idx, inst in enumerate(self.instances['logic'].insts):
+                site_name = inst.getName()
                 f.write(f"Optimizable\t{site_name}\t{idx}\n")
-            f.write(f"TOTAL\t{len(self.optimizable_insts)}\n\n")
+            f.write(f"TOTAL\t{len(self.instances['logic'])}\n\n")
             
-        with open(self.get_debug_output_path('fixed_site_mapping_debug.tsv'), 'w') as f:
+        with open(self.get_debug_output_path('io_inst_mapping_debug.tsv'), 'w') as f:
             f.write("Type\tSiteInst_Name\tID\n")
-            for idx in range(len(self.fixed_insts)):
-                site_name = self.fixed_id_to_site[idx]
-                f.write(f"Fixed\t{site_name}\t{idx}\n")
-            f.write(f"TOTAL\t{len(self.fixed_insts)}\n\n")
+            for idx, inst in enumerate(self.instances['io'].insts):
+                site_name = inst.getName()
+                f.write(f"Fixed\t{site_name}\t{idx + offset}\n")
+            f.write(f"TOTAL\t{len(self.instances['io'])}\n\n")
 
     def _init_place_areas(self, design):
         self.total_insts_num = len(design.getSiteInsts())
-        self.opti_insts_num = len(self.optimizable_insts)
-        self.fixed_insts_num = len(self.fixed_insts)
-        self.other_insts_num = self.total_insts_num - (self.opti_insts_num + self.fixed_insts_num)
-        
-        self.constraint_alpha = self.opti_insts_num / 2
+        self.other_insts_num = self.total_insts_num - (self.instances['logic'].num + self.instances['io'].num)
+        self.constraint_alpha = self.instances['logic'].num / 2
 
-        INFO(f"Sites stat: {self.opti_insts_num} slice sites, {self.fixed_insts_num} fixed sites, {self.other_insts_num} other sites, total {self.total_insts_num} sites.")
+        INFO(f"Sites stat: {self.instances['logic'].num} slice sites, {self.instances['io'].num} fixed sites, {self.other_insts_num} other sites, total {self.total_insts_num} sites.")
         
         if self.grid_type == GridType.SQUARE:
-            area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
+            area_length = int(np.ceil(np.sqrt(self.instances['logic'].num / self.utilization_factor)))
             area_height = area_length
-
-            # area_length = 8
-            # area_height = 100
-        
         elif self.grid_type == GridType.RECTAN:
-            # Rectangular grid: consider logic depth from net analysis
-            base_area = self.opti_insts_num / self.utilization_factor
+            base_area = self.instances['logic'].num / self.utilization_factor
             logic_depth = self.net_manager.logic_depth
             
             # Adjust aspect ratio based on logic depth:
@@ -283,12 +265,11 @@ class FpgaPlacer:
             # => length = sqrt(base_area * aspect_ratio), width = sqrt(base_area / aspect_ratio)
             area_length = int(np.ceil(np.sqrt(base_area * aspect_ratio)))
             area_height = int(np.ceil(np.sqrt(base_area / aspect_ratio)))
-            
             INFO(f"Using RECT grid: logic_depth_factor={logic_depth:.3f}, aspect_ratio={aspect_ratio:.3f}")
         
         else:
             # Default fallback
-            area_length = int(np.ceil(np.sqrt(self.opti_insts_num / self.utilization_factor)))
+            area_length = int(np.ceil(np.sqrt(self.instances['logic'].num / self.utilization_factor)))
             area_height = 0
         
         start_x = 0
@@ -303,12 +284,34 @@ class FpgaPlacer:
         logic_grid.area_width = area_height
         logic_grid.__post_init__()
         
-        utilization = self.opti_insts_num / (area_length * area_height)
+        utilization = self.instances['logic'].num / (area_length * area_height)
         
         INFO(f"Estimate area {area_length} x {area_height} , start=({start_x}, {start_y}), end=({end_x}, {end_y}), utilization {utilization:.3f}")
 
     def _init_io_area(self):
-        num_pins = len(self.fixed_insts)
+        
+        if self.place_mode == PlaceMode.VIRTUAL_NODE:
+            # IO area matched with logic area (which matches clock region)
+            
+            logic_start_x = self.grids['logic'].start_x
+            logic_start_y = self.grids['logic'].start_y
+            logic_end_x = self.grids['logic'].end_x
+            logic_end_y = self.grids['logic'].end_y
+
+            io_grid = self.grids['io']
+            io_grid.start_x = logic_start_x
+            io_grid.start_y = logic_start_y
+            io_grid.area_length = self.grids['logic'].area_length
+            io_grid.area_width = self.grids['logic'].area_width
+            
+            # For virtual node mode, io grid is essentially the same bounding box as logic grid,
+            # but we will enforce boundary constraints in the optimizer/legalizer
+            io_grid.__post_init__()
+            
+            INFO(f"Virtual IO area (Boundary) - position: ({io_grid.start_x}, {io_grid.start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
+            return
+
+        num_pins = self.instances['io'].num
         
         io_length = 1
         io_width = num_pins + num_pins // 15
@@ -327,12 +330,12 @@ class FpgaPlacer:
         INFO(f"Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
 
     def _init_clock_buffer_area(self):
-        num_clk_buf = len(self.clock_insts)
+        num_clk_buf = self.instances['clock'].num
         clock_length = 1
         clock_height = num_clk_buf
         
-        clock_start_x = self.grids['logic'].start_x
-        bbox_center_y = self.grids['logic'].center_y
+        clock_start_x = self.grids['clock'].start_x
+        bbox_center_y = self.grids['clock'].center_y
         clock_start_y = bbox_center_y - clock_height // 2
         
         clock_grid = self.grids['clock']
@@ -348,15 +351,15 @@ class FpgaPlacer:
     
         design.unplaceDesign()
         
-        INFO(f"Optimizable instances num: {self.opti_insts_num}, available sites num: {self.avail_sites_num}")
+        INFO(f"Logic instances num: {self.instances['logic'].num}, available sites num: {self.instances['sites'].num}")
 
-        random.shuffle(self.available_sites)
+        random.shuffle(self.instances['sites'].insts)
 
         placed_count = 0
-        for i, site in enumerate(self.optimizable_insts):
-            if i < len(self.available_sites):
-                target_site = self.available_sites[i]
-                
+        for i, site in enumerate(self.instances['logic'].insts):
+            if i < self.instances['sites'].num:
+                target_site = self.instances['sites'].insts[i]
+
                 if self.is_site_compatible(site, target_site):
                     # self.place_site(site, target_site)
                     
@@ -387,7 +390,7 @@ class FpgaPlacer:
                 ERROR(f"No more site for {site.getName()}")
 
         # Fixed sites
-        for fixed_site in self.fixed_insts:
+        for fixed_site in self.instances['io'].insts:
             self.fixed_placements[fixed_site.getName()] = {
                 'target_site': None,
                 'target_site': fixed_site,
@@ -431,15 +434,14 @@ class FpgaPlacer:
         self.available_slices_ml.extend(list(device.getAllCompatibleSites(SiteTypeEnum.SLICEM)))
         self.cells = design.getCells()
         vivado_hpwl = self.net_manager.analyze_design_hpwl(design)
-        self.get_optimizable_insts(design) 
-        self.get_fixed_insts(design)         
-        self.get_other_insts(design)      
+        
+        self.classify_instances(design)
         self._init_place_areas(design)
         self._init_io_area()
         self._init_clock_buffer_area()
         self.get_available_target_sites(device)
         self._map_site_to_id()
-        net_num = self.net_manager.analyze_nets(self.opti_insts_num, self.avail_sites_num, self.fixed_insts_num)
+        net_num = self.net_manager.analyze_nets(self.instances['logic'].num, self.instances['sites'].num, self.instances['io'].num)
         self.random_initial_placement(design)
         
         self._get_place_area_coords()
@@ -447,8 +449,8 @@ class FpgaPlacer:
         self._get_combined_coords()
 
         inst_num = {
-            'logic_inst_num': self.opti_insts_num,
-            'io_inst_num': self.fixed_insts_num
+            'logic_inst_num': self.instances['logic'].num,
+            'io_inst_num': self.instances['io'].num
             }
 
         return vivado_hpwl, inst_num, net_num
@@ -459,8 +461,8 @@ class FpgaPlacer:
         self.net_manager.set_debug_path(result_dir, instance_name)
         
         params = {
-            'num_inst': self.opti_insts_num,
-            'num_fixed_inst': self.fixed_insts_num,
+            'num_inst': self.instances['logic'].num,
+            'num_fixed_inst': self.instances['io'].num,
             'num_site': self.grids['logic'].area,
             'num_fixed_site': self.grids['io'].area_width,
             'logic_grid_width': self.grids['logic'].area_width,
@@ -498,12 +500,12 @@ class FpgaPlacer:
         instance_coords = {}
         
         for instance_id in range(len(coords)):
-            site_name = self.get_site_inst_name_by_id(instance_id)
+            site_name = self.get_inst_name_by_id(instance_id)
             instance_coords[site_name] = coords[instance_id]
 
         if include_io:
             for instance_id in range(len(io_coords)):
-                site_name = self.get_site_inst_name_by_id(instance_id + self.opti_insts_num)
+                site_name = self.get_inst_name_by_id(instance_id + self.instances['logic'].num)
                 instance_coords[site_name] = io_coords[instance_id]
         
         return instance_coords
@@ -536,7 +538,7 @@ class FpgaPlacer:
         adjusted_io_coords = self.io_site_coords.clone()
         
         place_height = self.grids['logic'].area_width
-        io_height = self.fixed_insts_num 
+        io_height = self.instances['io'].num 
     
         logic_center_y = (place_height - 1) / 2.0
         io_center_y = (io_height - 1) / 2.0 

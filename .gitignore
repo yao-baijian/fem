@@ -172,4 +172,7 @@ result/*
 
 .claude
 /*.csv
-/*.png
+*.png
+*.drawio
+
+benchmarks/vtr/
