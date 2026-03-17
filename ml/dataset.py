@@ -89,6 +89,19 @@ def get_csv_path(target: str = "alpha") -> str:
     else:
         return CSV_PATH_ALPHA
 
+def clear_dataset(path: Optional[str] = None, with_io: bool = False):
+    """
+    Clear the dataset CSV file (overwrite with just headers).
+    """
+    if path is None:
+        path = CSV_PATH_ALPHA_BETA if with_io else CSV_PATH_ALPHA
+        
+    fieldnames = LOGIC_IO_FIELDNAMES if with_io else LOGIC_FIELDNAMES
+    
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
 def append_row(row: Dict[str, Any], path: Optional[str] = None, with_io: bool = False):
     """
     Append a row to the CSV file.

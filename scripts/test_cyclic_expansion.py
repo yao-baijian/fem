@@ -22,10 +22,13 @@ from fem_placer import (
     solve_placement_cyclic,
 )
 from fem_placer.logger import *
-SET_LEVEL('WARNING')
+SET_LEVEL('INFO')
 
-instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-             's1238', 's1488', 's5378', 's9234', 's15850']
+# instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+#              's1238', 's1488', 's5378', 's9234', 's15850']
+
+# instances = ['bgm', 'sha1', 'diffeq_f_systemC', 'FPGA-example1']
+instances = ['RLE_BlobMerging']
 # Configuration
 max_iters = 200
 k = 60          # instances per iteration
@@ -47,7 +50,7 @@ for instance in instances:
 
     # Get coupling matrix from net_manager
     J = fpga_placer.net_manager.insts_matrix
-    num_inst = fpga_placer.opti_insts_num
+    num_inst = fpga_placer.instances['logic'].num
 
     # Get grid information
     logic_grid = fpga_placer.get_grid('logic')

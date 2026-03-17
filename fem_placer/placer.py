@@ -11,6 +11,7 @@ import rapidwright
 from contextlib import contextmanager
 from fem_placer.net import NetManager
 from fem_placer.grid import Grid
+from fem_placer.hollow_grid import HollowGrid
 from fem_placer.instance import InstanceGroup
 from fem_placer.config import *
 from fem_placer.logger import INFO, WARNING, ERROR
@@ -26,7 +27,7 @@ class FpgaPlacer:
     def __init__(self, 
                  place_orientation = PlaceType.CENTERED, 
                  grid_type = GridType.SQUARE,
-                 place_mode = PlaceMode.NORMAL,
+                 place_mode = IoMode.NORMAL,
                  utilization_factor = 0.3,
                  debug = True,
                  device = 'cpu'):
@@ -45,7 +46,7 @@ class FpgaPlacer:
         
         self.grids = {
             'logic': Grid(name='logic', device=device),
-            'io': Grid(name='io', device=device),
+            'io': HollowGrid(name='io', device=device) if place_mode == IoMode.VIRTUAL_NODE else Grid(name='io', device=device),
             'clock': Grid(name='clock', device=device)
         }
 
@@ -131,18 +132,18 @@ class FpgaPlacer:
                 pass
         
     def get_site_inst_id_by_name(self, site_name):
-        if site_name in self.instances['logic'].name_to_id:
-            return self.instances['logic'].name_to_id.get(site_name)
-        elif site_name in self.instances['io'].name_to_id:
+        if self.instances['logic'].has_name(site_name):
+            return self.instances['logic'].get_id(site_name)
+        elif self.instances['io'].has_name(site_name):
             return self.instances['io'].get_id(site_name) + self.instances['logic'].num
         else:
             WARNING(f"Cannot find site_inst id for site_name: {site_name}")
             return None
         
     def get_inst_name_by_id(self, id):
-        if id < self.instances['logic'].num:
-            return self.instances['logic'].id_to_name.get(id)
-        elif (id - self.instances['logic'].num) < self.instances['io'].num:
+        if self.instances['logic'].has_id(id):
+            return self.instances['logic'].get_name(id)
+        elif self.instances['io'].has_id(id - self.instances['logic'].num):
             return self.instances['io'].get_name(id - self.instances['logic'].num)
         else:
             WARNING(f"Cannot find site_inst name for id: {id}")
@@ -158,7 +159,7 @@ class FpgaPlacer:
 
         # 1. Collect instances include IO (IOB), not used in module run
 
-        if self.place_mode == PlaceMode.NORMAL:
+        if self.place_mode == IoMode.NORMAL:
             for site_inst in design.getSiteInsts():
                 site_type = site_inst.getSiteTypeEnum()
                 if site_type in SLICE_SITE_ENUM:
@@ -171,8 +172,17 @@ class FpgaPlacer:
                     WARNING(f"Site {site_inst.getName()} with type {site_type} is not classified as optimizable or fixed.")
 
         # 2. Collect instances boundary node as virtual (IO), used in module run
-        elif self.place_mode == PlaceMode.VIRTUAL_NODE:
-            
+        elif self.place_mode == IoMode.VIRTUAL_NODE:
+            io_file = os.path.join(self.result_dir, self.instance_name, 'io_locations.txt')
+            io_site_names = set()
+            if os.path.exists(io_file):
+                with open(io_file, 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            io_site_names.add(parts[1]) # record site name, e.g. SLICE_X15Y148
+            else:
+                WARNING(f"IO locations file not found: {io_file}")
 
             for site_inst in design.getSiteInsts():
                 site_type = site_inst.getSiteTypeEnum()
@@ -181,14 +191,8 @@ class FpgaPlacer:
                 if site_type in IO_SITE_ENUM or site_type in OTHER_SITE_ENUM:
                      continue
 
-                # Check for generic IOs (via wrapper/boundary registers)
-                is_boundary = False
-                if site_type in SLICE_SITE_ENUM:
-                    for cell in site_inst.getCells():
-                        # Detect boundary registers by name convention
-                        if "u_io_reg_" in cell.getName():
-                            is_boundary = True
-                            break
+                # RapidWright provides site name (which inherently maps to the fixed location in this case)
+                is_boundary = site_inst.getSiteName() in io_site_names
                 
                 if is_boundary:
                     self.instances['io'].add(site_inst)
@@ -290,7 +294,7 @@ class FpgaPlacer:
 
     def _init_io_area(self):
         
-        if self.place_mode == PlaceMode.VIRTUAL_NODE:
+        if self.place_mode == IoMode.VIRTUAL_NODE:
             # IO area matched with logic area (which matches clock region)
             
             logic_start_x = self.grids['logic'].start_x
@@ -441,8 +445,9 @@ class FpgaPlacer:
         self._init_clock_buffer_area()
         self.get_available_target_sites(device)
         self._map_site_to_id()
-        net_num = self.net_manager.analyze_nets(self.instances['logic'].num, self.instances['sites'].num, self.instances['io'].num)
-        self.random_initial_placement(design)
+        net_num = self.net_manager.analyze_nets(self.instances['logic'], 
+                                                self.instances['io'])
+        # self.random_initial_placement(design)
         
         self._get_place_area_coords()
         self._get_io_area_coords()
@@ -526,19 +531,24 @@ class FpgaPlacer:
     #     return torch.stack([x_coords, y_coords], dim=1)
 
     def _get_io_area_coords(self):
-        place_width = self.grids['io'].area_width 
+        if self.place_mode == IoMode.VIRTUAL_NODE:
+            io_grid = self.grids['io']
+            # _empty_positions stores real coordinates. By default, it's sorted by x then y (column-major)
+            self.io_site_coords = torch.tensor(io_grid._empty_positions, dtype=torch.float32, device=self.device)
+        else:
+            place_width = self.grids['io'].area_width 
 
-        self.io_site_coords = self.grids['io'].to_real_coords_tensor(torch.cartesian_prod(
-            torch.tensor([0], dtype=torch.float32, device=self.device),
-            torch.arange(place_width, dtype=torch.float32, device=self.device) 
-        ))
+            self.io_site_coords = self.grids['io'].to_real_coords_tensor(torch.cartesian_prod(
+                torch.tensor([0], dtype=torch.float32, device=self.device),
+                torch.arange(place_width, dtype=torch.float32, device=self.device) 
+            ))
         
     def _get_combined_coords(self):
         logic_coords = self.logic_site_coords.clone()
         adjusted_io_coords = self.io_site_coords.clone()
         
         place_height = self.grids['logic'].area_width
-        io_height = self.instances['io'].num 
+        io_height = self.grids['io'].area_width
     
         logic_center_y = (place_height - 1) / 2.0
         io_center_y = (io_height - 1) / 2.0 

@@ -1,7 +1,7 @@
 # Usage: source tcl/place_boundary_io.tcl
 # Must be run after synthesis/link_design
 
-proc place_io_registers {clock_region} {
+proc place_io_registers {clock_region {top_module "default"}} {
     puts "Placing IO registers on boundary of clock region: $clock_region"
     
     # 1. Get all Slice sites in the clock region
@@ -89,6 +89,16 @@ proc place_io_registers {clock_region} {
         puts "Warning: More IO registers ([llength $io_regs]) than boundary sites ([llength $boundary_sites]). Some will be unplaced."
     }
 
+    # Create PBLOCK for boundary sites to prevent logic from mixing into it
+    create_pblock pblock_boundary
+    resize_pblock [get_pblocks pblock_boundary] -add $boundary_sites
+    add_cells_to_pblock [get_pblocks pblock_boundary] $io_regs
+    set_property EXCLUDE_PLACEMENT 1 [get_pblocks pblock_boundary]
+
+    # Open output txt file for placed IO mapping
+    file mkdir "result/${top_module}"
+    set fp [open "result/${top_module}/io_locations.txt" w]
+
     # 5. Assign Locations
     set idx 0
     foreach reg $io_regs {
@@ -96,18 +106,20 @@ proc place_io_registers {clock_region} {
             break
         }
         set site [lindex $boundary_sites $idx]
-        
+        set site_name [get_property NAME $site]
         # Lock placement
-        set_property LOC $site $reg
+        set_property LOC $site_name $reg
         
-        # Also need to fix the BEL if we want exact placement, but LOC is often enough for slice granularity. 
-        # But if we want 1 reg per slice, it's safer.
-        # Actually, a slice has 8 FFs. We can pack 8 regs per slice if needed.
-        # To keep it simple (as described "boundary nodes"), let's just LOC to the SLICE.
-        # Vivado will pick a BEL inside.
+        # Write to txt log file
+        if {[regexp {SLICE_X(\d+)Y(\d+)} $site_name match site_x site_y]} {
+            puts $fp "[get_property NAME $reg] $site_name $site_x $site_y"
+        } else {
+            puts $fp "[get_property NAME $reg] $site_name"
+        }
         
         incr idx
     }
+    close $fp
     puts "Placed $idx IO registers on boundary."
 }
 

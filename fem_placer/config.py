@@ -14,7 +14,7 @@ class GridType(Enum):
     RECTAN = 2
     OTHER = 3
 
-class PlaceMode(Enum):
+class IoMode(Enum):
     NORMAL = 1
     VIRTUAL_NODE = 2
 
@@ -27,4 +27,8 @@ IO_SITE_ENUM = [
 
 # CLOCK_SITE_ENUM = [SiteTypeEnum.BUFGCE]
 
-OTHER_SITE_ENUM = [SiteTypeEnum.BUFGCE, SiteTypeEnum.DSP48E2, SiteTypeEnum.RAMB36, SiteTypeEnum.BITSLICE_COMPONENT_RX_TX,]
+OTHER_SITE_ENUM = [SiteTypeEnum.BUFGCE, 
+                   SiteTypeEnum.DSP48E2, 
+                   SiteTypeEnum.RAMB36, 
+                   SiteTypeEnum.RAMB180, 
+                   SiteTypeEnum.BITSLICE_COMPONENT_RX_TX,]

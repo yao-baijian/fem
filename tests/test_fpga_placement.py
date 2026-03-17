@@ -23,17 +23,13 @@ from ml.predict import predict_alpha
 SET_LEVEL('INFO')
 
 # instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-#              's1238', 's1488', 's5378', 's9234', 's15850']
-
-# ''
-# instances = ['FPGA-example2']
-# instances = ['c1355_boundary']
+#              's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example2']
 
 # instances = ['bgm', 'blob_merge', 'boundtop', 'ch_intrinsics', 'diffeq', 'diffeq2', 'LU8PEEng', 
 #             'LU32PEEng', 'mcml', 'mkDelayWorker32B', 'mkPktMerge', 'mkSMAdapter4B', 'or1200', 
-#             'raygentop', 'sha', 'stereovision0', 'stereovision1', 'stereovision2', 'stereovision3']
+#             'raygentop', 'sha', 'stereovision0', 'stereovision1', 'stereovision2', 'stereovision3', 'RLE_BlobMerging']
 
-instances = ['bgm', 'RLE_BlobMerging', 'paj_boundtop_hierarchy_no_mem']
+instances = ['c1355_boundary']
             
 draw_evolution = False
 draw_loss_function = False
@@ -48,14 +44,15 @@ print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Site/To
       f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12}")
 
 for instance in instances:
-    place_type = PlaceType.CENTERED
+    place_type = PlaceType.IO
     debug = False
-    fpga_placer = FpgaPlacer(place_type, 
-                            GridType.SQUARE,
-                            0.4,
-                            debug,
-                            device=dev)
-    
+    fpga_placer = FpgaPlacer(place_orientation = place_type, 
+                            grid_type = GridType.SQUARE,
+                            place_mode = IoMode.VIRTUAL_NODE,
+                            utilization_factor = 0.4,
+                            debug = debug,
+                            device = dev)
+
     fpga_placer.set_instance_name(instance)
     
     vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
@@ -82,7 +79,7 @@ for instance in instances:
         num_inst=fpga_placer.instances['logic'].num,
         num_fixed_inst=fpga_placer.instances['io'].num,
         num_site=fpga_placer.get_grid('logic').area,
-        num_fixed_site=fpga_placer.get_grid('io').area_width,
+        num_fixed_site=fpga_placer.get_grid('io').area,
         logic_grid_width=fpga_placer.get_grid('logic').area_width,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,

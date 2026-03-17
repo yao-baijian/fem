@@ -163,7 +163,7 @@ class FPGAPlacementOptimizer:
                 device=self.dev, dtype=self.dtype
             )
             
-            h_io = self.h_factor * torch.randn(
+            h_io = 40 * self.h_factor * torch.randn(
                 [self.num_trials, self.fixed_insts_num, self.fixed_site_num], 
                 device=self.dev, dtype=self.dtype
             )
@@ -268,10 +268,11 @@ class FPGAPlacementOptimizer:
         if self.with_io:
             p = self.iterate_placement_with_io()
             config, result = infer_placements_with_io(self.coupling_matrix, 
-                                                      self.io_site_connect_matrix, 
+                                                      self.io_site_connect_matrix,
                                                       p[0], p[1], 
-                                                      self.logic_grid_width, 
-                                                      D_LL=self.D_LL, D_LI=self.D_LI)
+                                                      self.logic_grid_width,
+                                                      D_LL=self.D_LL, D_LI=self.D_LI, 
+                                                      io_site_coords=self.io_site_coords)
             return config, result
         else:
             p = self.iterate_placement(self.logic_grid_width)

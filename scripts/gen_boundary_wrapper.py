@@ -39,6 +39,18 @@ def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
         print("Error: No inputs or outputs found.")
         return
 
+    # Identify clock ports
+    clk_patterns = [r'^clk$', r'^clock$', r'^clk\d*$', r'^clock\d*$']
+    clock_ports = []
+    
+    for port in inputs:
+        for pat in clk_patterns:
+            if re.match(pat, port.lower()):
+                clock_ports.append(port)
+                break
+                
+    data_inputs = [p for p in inputs if p not in clock_ports]
+
     wrapper_name = f"{module_name}_wrapper"
     
     with open(output_file, 'w') as f:
@@ -46,15 +58,19 @@ def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
         f.write("    input clk,\n")
         
         all_ports = inputs + outputs
-        for i, port in enumerate(all_ports):
+        port_decls = []
+        for port in all_ports:
+            if port in clock_ports:
+                continue
             direction = "input" if port in inputs else "output"
-            separator = "," if i < len(all_ports) - 1 else ""
-            f.write(f"    {direction} {port}{separator}\n")
-        f.write(");\n\n")
+            port_decls.append(f"    {direction} {port}")
+            
+        f.write(",\n".join(port_decls))
+        f.write("\n);\n\n")
 
         # Internal wires for connection to the original module
         f.write("    // Internal wires connecting wrapper registers to core logic\n")
-        for port in inputs:
+        for port in data_inputs:
             f.write(f"    wire {port}_int;\n")
         for port in outputs:
             f.write(f"    wire {port}_int;\n")
@@ -62,7 +78,7 @@ def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
 
         # Instantiate Input Registers
         f.write("    // Input Registers\n")
-        for port in inputs:
+        for port in data_inputs:
             # FDRE instance for input
             # D = port (external input), Q = internal wire to core, C = clk, CE=1, R=0
             f.write(f"    FDRE #(.INIT(1'b0)) u_io_reg_in_{port} (\n")
@@ -90,10 +106,13 @@ def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
 
         # Instantiate Original Module
         f.write(f"    {module_name} inst_{module_name} (\n")
-        for i, port in enumerate(all_ports):
-            separator = "," if i < len(all_ports) - 1 else ""
-            # Connect to internal wires
-            f.write(f"        .{port}({port}_int){separator}\n")
+        inst_connections = []
+        for port in all_ports:
+            if port in clock_ports:
+                inst_connections.append(f"        .{port}(clk)")
+            else:
+                inst_connections.append(f"        .{port}({port}_int)")
+        f.write(",\n".join(inst_connections) + "\n")
         f.write("    );\n")
         
         f.write("endmodule\n")

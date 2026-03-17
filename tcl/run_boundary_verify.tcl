@@ -54,7 +54,7 @@ create_clock -period 5.0 -name clk [get_ports clk]
 
 # 5. Place IO Registers on Boundary
 source tcl/place_boundary_io.tcl
-place_io_registers $clock_region
+place_io_registers $clock_region "${top_module}_boundary"
 
 # 6. Implementation Flow
 opt_design

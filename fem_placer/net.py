@@ -213,7 +213,10 @@ class NetManager:
 
                 f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{instance_count}\t{instances_str}\n")
 
-    def analyze_nets(self, optimizable_insts_num=0, available_sites_num=0, fixed_insts_num=0):
+    def analyze_nets(self, logic_instances, io_instances):
+
+        logic_insts_num = logic_instances.num
+        io_insts_num = io_instances.num
 
         self.net_names = [net.getName() for net in self.nets]
         sites_net_list = []
@@ -230,14 +233,15 @@ class NetManager:
 
             for pin in net.getPins():
                 site_inst = pin.getSiteInst()
+                if not site_inst:
+                    continue
                 site_name = site_inst.getName()
-                site_type = site_inst.getSiteTypeEnum()
 
                 sites_in_net.add(site_name)
 
-                if site_type in SLICE_SITE_ENUM:
+                if logic_instances.has_name(site_name):
                     logic_sites.add(site_name)
-                elif site_type in IO_SITE_ENUM:
+                elif io_instances.has_name(site_name):
                     io_sites.add(site_name)
 
             if len(logic_sites) + len(io_sites) >= 2:
@@ -256,9 +260,9 @@ class NetManager:
                 valid_net_num += 1
                 sites_net_list.append(logic_sites)
 
-        self._create_net_tensor(valid_net_num, sites_net_list, optimizable_insts_num)
-        self._create_net_matrix(optimizable_insts_num, fixed_insts_num)
-        self.save_tensor_debug_info(instance_count=optimizable_insts_num)
+        self._create_net_tensor(valid_net_num, sites_net_list, logic_insts_num)
+        self._create_net_matrix(logic_insts_num, io_insts_num)
+        self.save_tensor_debug_info(instance_count=logic_insts_num)
         INFO(f"Processed {valid_net_num} nets, total {len(self.nets)} nets",
               f" {len(self.site_to_site_connectivity)} site-to-site routes",
               f" {len(self.io_to_site_connectivity)} io-to-site routes",

@@ -36,3 +36,9 @@ class InstanceGroup:
     
     def get_name(self, id):
         return self.id_to_name.get(id)
+    
+    def has_name(self, name):
+        return name in self.name_to_id
+    
+    def has_id(self, id):
+        return id < self.num

@@ -27,10 +27,10 @@ case_type = 'fpga_placement'
 # Configuration
 RESULT_DIR = './result'
 COARSE_CACHE_FILE = os.path.join(RESULT_DIR, 'coarse_results.json')
-USE_COARSE_CACHE = False  # Set to True to skip coarse sweep and use cached results
+USE_COARSE_CACHE = True  # Set to True to skip coarse sweep and use cached results
 
-instances = ['c880', 'c1355', 'c2670', 'c5315', 'c6288', 'c7552',
-             's713', 's1238', 's1488', 's5378', 's9234', 's15850']
+instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
+             's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
 
 # instances = ['FPGA-example1']
 # instances = ['c5315']
@@ -45,16 +45,21 @@ if USE_COARSE_CACHE and os.path.exists(COARSE_CACHE_FILE):
     except Exception as e:
         print(f"Warning: Could not load coarse cache: {e}")
 
+# Clear the dataset before starting a new run
+clear_dataset(with_io=False)
+clear_dataset(with_io=True)
+
 for instance in instances:
     place_type = PlaceType.CENTERED
     debug = False
-    fpga_placer = FpgaPlacer(place_type, 
-                            GridType.RECTAN,
-                            0.4,
-                            debug,
-                            device=dev)
+    fpga_placer = FpgaPlacer(place_orientation = place_type, 
+                            grid_type = GridType.SQUARE,
+                            place_mode = IoMode.NORMAL,
+                            utilization_factor = 0.4,
+                            debug = debug,
+                            device = dev)
     
-    vivado_hpwl, site_num, site_net_num, total_net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
+    vivado_hpwl, site_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
     area_size = fpga_placer.grids['logic'].area
     
     # Coarse sweep parameters
@@ -83,9 +88,10 @@ for instance in instances:
             fpga_placer.set_beta(beta)
 
         optimizer = FPGAPlacementOptimizer(
-            num_inst=fpga_placer.opti_insts_num,
-            num_fixed_inst=fpga_placer.fixed_insts_num,
+            num_inst=fpga_placer.instances['logic'].num,
+            num_fixed_inst=fpga_placer.instances['io'].num,
             num_site=fpga_placer.get_grid('logic').area,
+            num_fixed_site=fpga_placer.get_grid('io').area,
             logic_grid_width = fpga_placer.get_grid('logic').area_width,
             coupling_matrix=fpga_placer.net_manager.insts_matrix,
             site_coords_matrix=fpga_placer.logic_site_coords,
@@ -142,9 +148,7 @@ for instance in instances:
 
     # ==================== COARSE SWEEP ====================
     print(f"\n{'='*80}")
-    print(f"Instance: {instance}")
-    print(f"Place Type: {place_type.name}")
-    print(f"{'='*80}")
+    print(f"Instance: {instance}, Place Type: {place_type.name}")
     
     coarse_results = []
     
@@ -171,9 +175,9 @@ for instance in instances:
                 for used_beta in range(beta_start, beta_end, beta_step):
                     res = evaluate_placement(used_alpha, used_beta)
                     coarse_results.append(res)
-                    print(f"  alpha={used_alpha:<3.0f} beta={used_beta:<3.0f} | "
-                          f"hpwl={res['hpwl_final']:<10.2f} overlap={res['overlap_percent']:<6.3f} "
-                          f"in_range={res['in_allowed_range']}")
+                    # print(f"  alpha={used_alpha:<3.0f} beta={used_beta:<3.0f} | "
+                    #       f"hpwl={res['hpwl_final']:<10.2f} overlap={res['overlap_percent']:<6.3f} "
+                    #       f"in_range={res['in_allowed_range']}")
             
             # Find best alpha and beta from coarse sweep
             in_range_candidates = [r for r in coarse_results if r['in_allowed_range']]
@@ -192,8 +196,8 @@ for instance in instances:
             for used_alpha in range(coarse_start, coarse_end, coarse_step):
                 res = evaluate_placement(used_alpha, 0)
                 coarse_results.append(res)
-                print(f"  alpha={used_alpha:<3.0f} | hpwl={res['hpwl_final']:<10.2f} "
-                      f"overlap={res['overlap_percent']:<6.3f} in_range={res['in_allowed_range']}")
+                # print(f"  alpha={used_alpha:<3.0f} | hpwl={res['hpwl_final']:<10.2f} "
+                #       f"overlap={res['overlap_percent']:<6.3f} in_range={res['in_allowed_range']}")
             
             # Find best alpha from coarse sweep
             in_range_candidates = [r for r in coarse_results if r['in_allowed_range']]

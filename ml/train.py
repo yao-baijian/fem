@@ -110,11 +110,11 @@ if __name__ == "__main__":
     res_alpha = train_from_csv(target="alpha")
     print()
     
-    print("=" * 60)
-    print("Training Beta model (logic + IO placement)")
-    print("=" * 60)
-    try:
-        res_beta = train_from_csv(target="beta")
-    except FileNotFoundError:
-        print("Note: Beta training data not available yet. Run test_train_alpha.py with with_io=True to generate ml_data_alpha_beta.csv")
+    # print("=" * 60)
+    # print("Training Beta model (logic + IO placement)")
+    # print("=" * 60)
+    # try:
+    #     res_beta = train_from_csv(target="beta")
+    # except FileNotFoundError:
+    #     print("Note: Beta training data not available yet. Run test_train_alpha.py with with_io=True to generate ml_data_alpha_beta.csv")
     

@@ -59,16 +59,24 @@ def get_inst_coords_from_index(inst_indices, area_width):
     return coords.float()
 
 
-def get_io_coords_from_index(inst_indices):
+def get_io_coords_from_index(inst_indices, io_site_coords=None):
     """
-    Convert IO instance indices to coordinates (IO on left edge).
+    Convert IO instance indices to coordinates.
 
     Args:
         inst_indices: IO instance indices [batch_size, num_io]
+        io_site_coords: Optional tensor of valid IO physical coordinates [num_sites, 2]. 
+                        If provided, directly returns the coordinates of the selected indices.
 
     Returns:
         coords: IO coordinates [batch_size, num_io, 2]
     """
+    if io_site_coords is not None:
+        # Avoid direct float index, ensure integer indices
+        indices_long = inst_indices.long()
+        # [batch_size, num_io, 2]
+        return io_site_coords[indices_long]
+
     x_coords = torch.full_like(inst_indices, 0, dtype=torch.int32)
     y_coords = inst_indices
     coords = torch.stack([x_coords, y_coords], dim=2)
@@ -1015,7 +1023,7 @@ def infer_placements(J, p, area_width, D):
 def infer_placements_with_io(J_LL, J_LI, 
                              p_logic, p_io, 
                              area_width, 
-                             D_LL, D_LI):
+                             D_LL, D_LI, io_site_coords=None):
     """
     Infer final placements including IO from probability distributions.
 
@@ -1025,8 +1033,8 @@ def infer_placements_with_io(J_LL, J_LI,
         p_logic: Logic probability distribution
         p_io: IO probability distribution
         area_width: Width of the placement area
-        logic_site_coords_matrix: Logic site coordinates
-        io_site_coords_matrix: IO site coordinates
+        D_LL, D_LI: Distance matrices
+        io_site_coords: Optional valid site coordinates for IO.
 
     Returns:
         coords: List of [logic_coords, io_coords]
@@ -1035,7 +1043,7 @@ def infer_placements_with_io(J_LL, J_LI,
     logic_inst_indices = torch.argmax(p_logic, dim=2)
     io_inst_indices = torch.argmax(p_io, dim=2)
     logic_inst_coords = get_inst_coords_from_index(logic_inst_indices, area_width)
-    io_inst_coords = get_io_coords_from_index(io_inst_indices)
+    io_inst_coords = get_io_coords_from_index(io_inst_indices, io_site_coords=io_site_coords)
 
     duplicate_count, unique_coords, counts = count_duplicate_coords(io_inst_coords)
     INFO(f"Total duplicate sum: {duplicate_count}")
