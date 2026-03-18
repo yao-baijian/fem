@@ -9,6 +9,8 @@ Uses the master branch FpgaPlacer API (net_manager for coupling matrix).
 """
 
 import sys
+import os
+import json
 sys.path.insert(0, '.')
 
 import torch
@@ -18,7 +20,7 @@ from fem_placer import (
     solve_placement_sb
 )
 from fem_placer.logger import *
-SET_LEVEL('INFO')
+SET_LEVEL('WARNING')  # Set higher to suppress unnecessary logs from libraries
 
 # Configuration
 instances = ['c2670', 'c5315', 'c6288', 'c7552',
@@ -26,20 +28,29 @@ instances = ['c2670', 'c5315', 'c6288', 'c7552',
 
 # instances = ['c1355', 'c2670', 'c5315', 'c6288']
 
-agents = 16
+agents = 32
 max_steps = 1000
-lam = 300.0        # one-hot constraint weight
-mu = 300.0         # at-most-one constraint weight
+default_lam = 0.1        # one-hot constraint weight, fallback default
+default_mu = 1200         # at-most-one constraint weight, fallback default
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+config_path = './scripts/config/bsb_summary.json'
+bsb_config = {}
+if os.path.exists(config_path):
+    with open(config_path, 'r') as f:
+        bsb_config = json.load(f)
 
 print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'Overlap':<8} "
       f"{'HPWL Init':<18} {'HPWL Final':<16} {'QUBO Energy':<12}")
 
 for instance in instances:
+    lam = bsb_config.get(instance, {}).get('lam', default_lam)
+    mu = bsb_config.get(instance, {}).get('mu', default_mu)
+    
     dcp_file = f'./vivado/output_dir/{instance}/post_impl.dcp'
     output_file = f'bsb_placement_{instance}.dcp'
     INFO(f"Processing instance: {dcp_file}")
-    fpga_placer = FpgaPlacer(utilization_factor=0.3)
+    fpga_placer = FpgaPlacer(utilization_factor=0.4)
     vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(dcp_file=dcp_file, dcp_output=output_file)
 
     J = fpga_placer.net_manager.insts_matrix

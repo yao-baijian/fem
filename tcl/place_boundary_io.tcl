@@ -96,8 +96,15 @@ proc place_io_registers {clock_region {top_module "default"}} {
     set_property EXCLUDE_PLACEMENT 1 [get_pblocks pblock_boundary]
 
     # Open output txt file for placed IO mapping
-    file mkdir "result/${top_module}"
-    set fp [open "result/${top_module}/io_locations.txt" w]
+    file mkdir "../result/${top_module}"
+    set fp [open "../result/${top_module}/io_locations.txt" w]
+
+    # Output dimension file
+    set width [expr $max_y - $min_y + 1]
+    set length [expr $max_x - $min_x + 1]
+    set fp_dim [open "../result/${top_module}/io_dimensions.txt" w]
+    puts $fp_dim "$length $width"
+    close $fp_dim
 
     # 5. Assign Locations
     set idx 0

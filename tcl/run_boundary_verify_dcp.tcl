@@ -1,6 +1,6 @@
-# Usage: vivado -mode batch -source tcl/run_boundary_verify_dcp.tcl -tclargs <top_module> <dcp_file> [clock_region] [part_name]
+# Usage: cd vivado; vivado -mode batch -source ../tcl/run_boundary_verify_dcp.tcl -tclargs <top_module> <dcp_file> [clock_region] [part_name]
 if { $argc < 2 } {
-    puts "Error: Usage: vivado -mode batch -source tcl/run_boundary_verify_dcp.tcl -tclargs <top_module> <dcp_file> [clock_region] [part_name]"
+    puts "Error: Usage: cd vivado; vivado -mode batch -source ../tcl/run_boundary_verify_dcp.tcl -tclargs <top_module> <dcp_file> [clock_region] [part_name]"
     exit 1
 }
 
@@ -19,7 +19,7 @@ if { $argc > 3 } {
     set part_name "xcvu095-ffva2104-2-e"
 }
 
-set output_dir "vivado/output_dir/${top_module}"
+set output_dir "output_dir/${top_module}_boundary"
 file mkdir $output_dir
 
 puts "Starting verification for $top_module"
@@ -36,15 +36,6 @@ set stub_file "${output_dir}/${top_module}_stub.v"
 write_verilog -mode synth_stub -force $stub_file
 close_project
 
-# 2. Generate Wrapper
-puts "Generating wrapper for ${top_module}..."
-set wrapper_file "${output_dir}/${top_module}_wrapper.v"
-set python_cmd "python3 scripts/gen_boundary_wrapper.py $stub_file $wrapper_file $clock_region"
-if { [catch {exec {*}$python_cmd} msg] } {
-    puts "Error running python script: $msg"
-    exit 1
-}
-
 # 2.2 Find the actual module name from the stub
 set module_name "${top_module}"
 set fp [open $stub_file r]
@@ -55,6 +46,15 @@ while { [gets $fp line] >= 0 } {
     }
 }
 close $fp
+
+# 2. Generate Wrapper
+puts "Generating wrapper for ${module_name}..."
+set wrapper_file "${output_dir}/${top_module}_wrapper.v"
+set python_cmd "python3 ../scripts/gen_boundary_wrapper.py $stub_file $wrapper_file $module_name $clock_region"
+if { [catch {exec {*}$python_cmd} msg] } {
+    puts "Error running python script: $msg"
+    exit 1
+}
 
 # 3. Setup Project for final implementation
 create_project -in_memory -part $part_name
@@ -72,8 +72,8 @@ synth_design -top $wrapper_top -part $part_name -flatten_hierarchy rebuilt
 create_clock -period 5.0 -name clk [get_ports clk]
 
 # 6. Place IO Registers on Boundary
-source tcl/place_boundary_io.tcl
-place_io_registers $clock_region "${top_module}"
+source ../tcl/place_boundary_io.tcl
+place_io_registers $clock_region "${top_module}_boundary"
 
 # 7. Implementation Flow
 opt_design

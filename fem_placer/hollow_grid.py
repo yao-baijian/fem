@@ -63,6 +63,10 @@ class HollowGrid(Grid):
         inner_length = self.area_length - 2 * self.boundary_thickness
         inner_width = self.area_width - 2 * self.boundary_thickness
         return (self.area_length * self.area_width) - (inner_length * inner_width)
+    
+    @property
+    def thick(self) -> int:
+        return self.boundary_thickness
 
     def is_position_empty(self, x: int, y: int) -> bool:
         if not self.is_within_bounds(x, y):

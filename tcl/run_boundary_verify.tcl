@@ -1,8 +1,8 @@
-# Usage: vivado -mode batch -source tcl/run_boundary_verify.tcl -tclargs <top_module> <verilog_file> [clock_region] [part_name]
-# Example: vivado -mode batch -source tcl/run_boundary_verify.tcl -tclargs c1355 benchmarks/data/ISCAS85/c1355/c1355.v X2Y2 xcvu065-ffvc1517-1-i
+# Usage: cd vivado; vivado -mode batch -source ../tcl/run_boundary_verify.tcl -tclargs <top_module> <verilog_file> [clock_region] [part_name]
+# Example: cd vivado; vivado -mode batch -source ../tcl/run_boundary_verify.tcl -tclargs c1355 ../benchmarks/ISCAS85/c1355/c1355.v X2Y2 xcvu065-ffvc1517-1-i
 
 if { $argc < 2 } {
-    puts "Error: Usage: vivado -mode batch -source tcl/run_boundary_verify.tcl -tclargs <top_module> <verilog_file> [clock_region] [part_name]"
+    puts "Error: Usage: cd vivado; vivado -mode batch -source ../tcl/run_boundary_verify.tcl -tclargs <top_module> <verilog_file> [clock_region] [part_name]"
     exit 1
 }
 
@@ -21,7 +21,7 @@ if { $argc > 3 } {
     set part_name "xcvu065-ffvc1517-1-i"
 }
 
-set output_dir "vivado/output_dir/${top_module}_boundary"
+set output_dir "output_dir/${top_module}_boundary"
 file mkdir $output_dir
 
 puts "Starting verification for $top_module"
@@ -33,7 +33,7 @@ puts "  - Output Dir:   $output_dir"
 # 1. Generate Wrapper
 puts "Generating ${top_module} wrapper..."
 set wrapper_file "${output_dir}/${top_module}_wrapper.v"
-set python_cmd "python3 scripts/gen_boundary_wrapper.py $verilog_file $wrapper_file $clock_region"
+set python_cmd "python3 ../scripts/gen_boundary_wrapper.py $verilog_file $wrapper_file $top_module $clock_region"
 if { [catch {exec {*}$python_cmd} msg] } {
     puts "Error running python script: $msg"
     exit 1
@@ -53,7 +53,7 @@ synth_design -top $wrapper_top -part $part_name -flatten_hierarchy rebuilt
 create_clock -period 5.0 -name clk [get_ports clk]
 
 # 5. Place IO Registers on Boundary
-source tcl/place_boundary_io.tcl
+source ../tcl/place_boundary_io.tcl
 place_io_registers $clock_region "${top_module}_boundary"
 
 # 6. Implementation Flow

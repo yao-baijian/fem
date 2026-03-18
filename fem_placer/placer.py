@@ -156,9 +156,7 @@ class FpgaPlacer:
         return self.instances['sites'].id_to_name.get(id)
 
     def classify_instances(self, design):
-
         # 1. Collect instances include IO (IOB), not used in module run
-
         if self.place_mode == IoMode.NORMAL:
             for site_inst in design.getSiteInsts():
                 site_type = site_inst.getSiteTypeEnum()
@@ -170,7 +168,6 @@ class FpgaPlacer:
                     continue
                 elif site_inst not in self.instances['logic'].insts and site_inst not in self.instances['io'].insts:
                     WARNING(f"Site {site_inst.getName()} with type {site_type} is not classified as optimizable or fixed.")
-
         # 2. Collect instances boundary node as virtual (IO), used in module run
         elif self.place_mode == IoMode.VIRTUAL_NODE:
             io_file = os.path.join(self.result_dir, self.instance_name, 'io_locations.txt')
@@ -201,8 +198,6 @@ class FpgaPlacer:
                 else:
                     if not is_boundary:
                          WARNING(f'Cannot orient site type, site: {site_inst.getName()}, type: {site_type}')
-
-        # self.opti_insts_num will act as property later or adjust code below
     
     def get_available_target_sites(self, device):        
         for site in device.getAllSites():
@@ -276,10 +271,17 @@ class FpgaPlacer:
             area_length = int(np.ceil(np.sqrt(self.instances['logic'].num / self.utilization_factor)))
             area_height = 0
         
-        start_x = 0
-        end_x = start_x + area_length
-        start_y = 0 - area_height // 2
-        end_y = start_y + area_height
+        if self.place_mode == IoMode.VIRTUAL_NODE:
+            thickness = self.grids['io'].thick
+            start_x = thickness
+            end_x = start_x + area_length
+            start_y = thickness
+            end_y = start_y + area_height
+        else:
+            start_x = 0
+            end_x = start_x + area_length
+            start_y = 0 - area_height // 2
+            end_y = start_y + area_height
         
         logic_grid = self.grids['logic']
         logic_grid.start_x = start_x
@@ -295,21 +297,33 @@ class FpgaPlacer:
     def _init_io_area(self):
         
         if self.place_mode == IoMode.VIRTUAL_NODE:
-            # IO area matched with logic area (which matches clock region)
+            # IO area surrounds logic area
+            io_grid = self.grids['io']
+            thickness = io_grid.thick
             
             logic_start_x = self.grids['logic'].start_x
             logic_start_y = self.grids['logic'].start_y
-            logic_end_x = self.grids['logic'].end_x
-            logic_end_y = self.grids['logic'].end_y
 
-            io_grid = self.grids['io']
-            io_grid.start_x = logic_start_x
-            io_grid.start_y = logic_start_y
-            io_grid.area_length = self.grids['logic'].area_length
-            io_grid.area_width = self.grids['logic'].area_width
+            io_grid.start_x = logic_start_x - thickness
+            io_grid.start_y = logic_start_y - thickness
             
-            # For virtual node mode, io grid is essentially the same bounding box as logic grid,
-            # but we will enforce boundary constraints in the optimizer/legalizer
+            dim_file = os.path.join(self.result_dir, self.instance_name, 'io_dimensions.txt')
+            if os.path.exists(dim_file):
+                with open(dim_file, 'r') as f:
+                    parts = f.read().strip().split()
+                    if len(parts) >= 2:
+                        io_grid.area_length = int(parts[0])
+                        io_grid.area_width = int(parts[1])
+                        INFO(f"Loaded IO boundary dimensions loaded from {dim_file}: {io_grid.area_length}x{io_grid.area_width}")
+                    else:
+                        io_grid.area_length = self.grids['logic'].area_length + 2 * thickness
+                        io_grid.area_width = self.grids['logic'].area_width + 2 * thickness
+            else:
+                io_grid.area_length = self.grids['logic'].area_length + 2 * thickness
+                io_grid.area_width = self.grids['logic'].area_width + 2 * thickness
+            
+            # For virtual node mode, io grid is essentially a hollow ring around logic grid
+            # and we will enforce boundary constraints in the optimizer/legalizer
             io_grid.__post_init__()
             
             INFO(f"Virtual IO area (Boundary) - position: ({io_grid.start_x}, {io_grid.start_y}) to ({io_grid.end_x}, {io_grid.end_y})")

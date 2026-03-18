@@ -2,45 +2,73 @@ import re
 import sys
 import os
 
-def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
+def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X2Y2"):
     with open(verilog_file, 'r') as f:
         content = f.read()
 
-    # Find module name
-    module_match = re.search(r'module\s+(\w+)\s*\(', content)
-    if not module_match:
-        print(f"Error: Could not find module definition in {verilog_file}")
-        return
-    module_name = module_match.group(1)
+    # If top_module is provided, try to find that specific module
+    # otherwise pick the first module found
+    if top_module:
+        pattern = r'(?s)module\s+' + re.escape(top_module) + r'\b(.*?)(?:\s*endmodule\b)'
+        module_match = re.search(pattern, content)
+        if not module_match:
+            print(f"Error: Could not find module definition for {top_module} in {verilog_file}")
+            return
+        module_body = module_match.group(0)
+        module_name = top_module
+    else:
+        # Fallback to first module
+        module_match = re.search(r'(?s)module\s+(\w+)\b(.*?)(?:\s*endmodule\b)', content)
+        if not module_match:
+            print(f"Error: Could not find any module definition in {verilog_file}")
+            return
+        module_name = module_match.group(1)
+        module_body = module_match.group(0)
 
-    # Find ports
-    # This is a simple regex, might fail on complex Verilog with comments inside port list.
-    # Assuming standard format as seen in c1355.v attachment.
+    # Normalize whitespace inside the extracted module only
+    normalized_content = re.sub(r'\s+', ' ', module_body)
+    
+    # Remove single line comments that might have been flattened (careful, better to remove before flattening, but simplistic approach here)
+    # Actually, let's remove comments before matching module if possible, or just be careful.
+    
     inputs = []
     outputs = []
     
-    # Extract input and output declarations efficiently
-    # Normalize whitespace
-    normalized_content = re.sub(r'\s+', ' ', content)
-    
     # Find inputs
-    input_matches = re.finditer(r'input\s+([^;]+);', normalized_content)
+    input_matches = re.finditer(r'\binput\s+([^;]+);', normalized_content)
     for match in input_matches:
         ports = match.group(1).split(',')
-        inputs.extend([p.strip() for p in ports])
+        inputs.extend([p.strip() for p in ports if p.strip()])
 
     # Find outputs
-    output_matches = re.finditer(r'output\s+([^;]+);', normalized_content)
+    output_matches = re.finditer(r'\boutput\s+([^;]+);', normalized_content)
     for match in output_matches:
         ports = match.group(1).split(',')
-        outputs.extend([p.strip() for p in ports])
+        outputs.extend([p.strip() for p in ports if p.strip()])
 
+    if not inputs and not outputs:
+        # Some verilog has inputs/outputs in the module declaration
+        # like module s1488(input CK, input CLR, output v0);
+        # Let's check for that
+        ansi_matches = re.finditer(r'\b(input|output)\s+(?:wire\s+|reg\s+)?([^,;\)]+)', normalized_content)
+        for match in ansi_matches:
+            direction = match.group(1)
+            port_name = match.group(2).strip().split()[-1] # in case of "input wire [3:0] A"
+            if direction == "input":
+                inputs.append(port_name)
+            else:
+                outputs.append(port_name)
+                
     if not inputs and not outputs:
         print("Error: No inputs or outputs found.")
         return
 
+    # Deduplicate
+    inputs = list(dict.fromkeys(inputs))
+    outputs = list(dict.fromkeys(outputs))
+
     # Identify clock ports
-    clk_patterns = [r'^clk$', r'^clock$', r'^clk\d*$', r'^clock\d*$']
+    clk_patterns = [r'^clk$', r'^clock$', r'^clk\d*$', r'^clock\d*$', r'^ck$', r'^ck\d*$']
     clock_ports = []
     
     for port in inputs:
@@ -119,11 +147,12 @@ def generate_wrapper(verilog_file, output_file, clock_region="X2Y2"):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python3 gen_boundary_wrapper.py <input_verilog> <output_verilog> [clock_region]")
+        print("Usage: python3 gen_boundary_wrapper.py <input_verilog> <output_verilog> [top_module] [clock_region]")
         sys.exit(1)
         
     verilog_file = sys.argv[1]
     output_file = sys.argv[2]
-    clock_region = sys.argv[3] if len(sys.argv) > 3 else "X2Y2"
+    top_module = sys.argv[3] if len(sys.argv) > 3 else None
+    clock_region = sys.argv[4] if len(sys.argv) > 4 else "X2Y2"
     
-    generate_wrapper(verilog_file, output_file, clock_region)
+    generate_wrapper(verilog_file, output_file, top_module, clock_region)
