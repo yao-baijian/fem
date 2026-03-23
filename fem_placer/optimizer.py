@@ -34,7 +34,6 @@ class FPGAPlacementOptimizer:
             num_fixed_inst: int,
             num_site: int,
             num_fixed_site: int,
-            logic_grid_width: int,
             coupling_matrix: torch.Tensor,
             site_coords_matrix: torch.Tensor,
             io_site_connect_matrix: torch.Tensor = None,
@@ -50,6 +49,7 @@ class FPGAPlacementOptimizer:
             optimizer: str = 'adam',
             learning_rate: float = 0.1,
             h_factor: float = 0.01,
+            io_factor: float = 1.0,
             seed: int = 1,
             dtype: torch.dtype = torch.float32,
             with_io: bool = False,
@@ -72,11 +72,9 @@ class FPGAPlacementOptimizer:
         self.num_site = num_site
         self.fixed_site_num = num_fixed_site
         self.coupling_matrix = coupling_matrix
-        self.site_coords_matrix = site_coords_matrix
+        self.logic_site_coords = site_coords_matrix
         self.io_site_connect_matrix = io_site_connect_matrix
         self.io_site_coords = io_site_coords
-        # self.net_sites_tensor = self.fpga_wrapper.net_manager.net_tensor 
-        self.logic_grid_width = logic_grid_width    
         self.constraint_alpha = constraint_alpha
         self.constraint_beta = constraint_beta
         
@@ -96,6 +94,7 @@ class FPGAPlacementOptimizer:
         self.optimizer = optimizer
         self.learning_rate = learning_rate
         self.h_factor = h_factor
+        self.io_factor = io_factor
         self.seed = seed
         self.with_io = with_io
         self.manual_grad = manual_grad
@@ -137,7 +136,6 @@ class FPGAPlacementOptimizer:
             'num_fixed_inst': params['num_fixed_inst'],
             'num_site': params['num_site'],
             'num_fixed_site': params['num_fixed_site'],
-            'logic_grid_width': params['logic_grid_width'],
             'coupling_matrix': coupling_matrix,
             'site_coords_matrix': site_coords_matrix,
             'io_site_connect_matrix': io_site_connect_matrix,
@@ -163,7 +161,7 @@ class FPGAPlacementOptimizer:
                 device=self.dev, dtype=self.dtype
             )
             
-            h_io = 40 * self.h_factor * torch.randn(
+            h_io = self.io_factor * self.h_factor * torch.randn(
                 [self.num_trials, self.fixed_insts_num, self.fixed_site_num], 
                 device=self.dev, dtype=self.dtype
             )
@@ -172,8 +170,8 @@ class FPGAPlacementOptimizer:
                 h_logic.requires_grad=True
                 h_io.requires_grad=True
 
-            x_logic = self.site_coords_matrix[:, 0]
-            y_logic = self.site_coords_matrix[:, 1]
+            x_logic = self.logic_site_coords[:, 0]
+            y_logic = self.logic_site_coords[:, 1]
 
             Dx_LL = torch.abs(x_logic.unsqueeze(1) - x_logic.unsqueeze(0))
             Dy_LL = torch.abs(y_logic.unsqueeze(1) - y_logic.unsqueeze(0))
@@ -196,8 +194,8 @@ class FPGAPlacementOptimizer:
         if not self.manual_grad:
             h.requires_grad = True
 
-        coords_i = self.site_coords_matrix.unsqueeze(1)
-        coords_j = self.site_coords_matrix.unsqueeze(0)
+        coords_i = self.logic_site_coords.unsqueeze(1)
+        coords_j = self.logic_site_coords.unsqueeze(0)
         self.D = torch.sum(torch.abs(coords_i - coords_j), dim=2)
 
         return h
@@ -214,7 +212,7 @@ class FPGAPlacementOptimizer:
         else:
             raise ValueError("Unknown optimizer, valid choices are ['adam', 'rmsprop'].")
 
-    def iterate_placement(self, area_width):
+    def iterate_placement(self):
         h = self._initialize()
         opt = self._setup_optimizer([h])
 
@@ -227,7 +225,7 @@ class FPGAPlacementOptimizer:
                 p=p, 
                 D=self.D, 
                 step=step, 
-                area_width=area_width, 
+                site_coords_matrix=self.logic_site_coords, 
                 alpha=self.constraint_alpha
             )
 
@@ -270,14 +268,14 @@ class FPGAPlacementOptimizer:
             config, result = infer_placements_with_io(self.coupling_matrix, 
                                                       self.io_site_connect_matrix,
                                                       p[0], p[1], 
-                                                      self.logic_grid_width,
+                                                      self.logic_site_coords,
                                                       D_LL=self.D_LL, D_LI=self.D_LI, 
                                                       io_site_coords=self.io_site_coords)
             return config, result
         else:
-            p = self.iterate_placement(self.logic_grid_width)
+            p = self.iterate_placement()
             config, result = infer_placements(self.coupling_matrix, 
                                               p, 
-                                              self.logic_grid_width, 
+                                              self.logic_site_coords, 
                                               D=self.D)
             return config, result

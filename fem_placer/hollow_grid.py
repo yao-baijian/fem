@@ -67,6 +67,10 @@ class HollowGrid(Grid):
     @property
     def thick(self) -> int:
         return self.boundary_thickness
+        
+    @thick.setter
+    def thick(self, value: int):
+        self.boundary_thickness = value
 
     def is_position_empty(self, x: int, y: int) -> bool:
         if not self.is_within_bounds(x, y):

@@ -25,11 +25,13 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
         module_name = module_match.group(1)
         module_body = module_match.group(0)
 
+        # Remove block comments
+    module_body = re.sub(r'/\*.*?\*/', '', module_body, flags=re.DOTALL)
+    # Remove single line comments
+    module_body = re.sub(r'//.*', '', module_body)
+
     # Normalize whitespace inside the extracted module only
     normalized_content = re.sub(r'\s+', ' ', module_body)
-    
-    # Remove single line comments that might have been flattened (careful, better to remove before flattening, but simplistic approach here)
-    # Actually, let's remove comments before matching module if possible, or just be careful.
     
     inputs = []
     outputs = []
@@ -37,14 +39,19 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
     # Find inputs
     input_matches = re.finditer(r'\binput\s+([^;]+);', normalized_content)
     for match in input_matches:
-        ports = match.group(1).split(',')
-        inputs.extend([p.strip() for p in ports if p.strip()])
+        ports_str = match.group(1)
+        # Strip out any vector notation like [BITS-1:0] or [3:0]
+        ports_str = re.sub(r'\[.*?\]', '', ports_str)
+        ports = ports_str.split(',')
+        inputs.extend([p.strip().split()[-1] for p in ports if p.strip()])
 
     # Find outputs
     output_matches = re.finditer(r'\boutput\s+([^;]+);', normalized_content)
     for match in output_matches:
-        ports = match.group(1).split(',')
-        outputs.extend([p.strip() for p in ports if p.strip()])
+        ports_str = match.group(1)
+        ports_str = re.sub(r'\[.*?\]', '', ports_str)
+        ports = ports_str.split(',')
+        outputs.extend([p.strip().split()[-1] for p in ports if p.strip()])
 
     if not inputs and not outputs:
         # Some verilog has inputs/outputs in the module declaration

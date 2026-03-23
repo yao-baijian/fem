@@ -196,8 +196,7 @@ class FpgaPlacer:
                 elif site_type in SLICE_SITE_ENUM:
                     self.instances['logic'].add(site_inst)
                 else:
-                    if not is_boundary:
-                         WARNING(f'Cannot orient site type, site: {site_inst.getName()}, type: {site_type}')
+                    WARNING(f'Cannot orient site type, site: {site_inst.getName()}, type: {site_type}')
     
     def get_available_target_sites(self, device):        
         for site in device.getAllSites():
@@ -225,20 +224,21 @@ class FpgaPlacer:
         self.instances['io'].create_mappings(0)
         self.instances['sites'].create_mappings(0)
         
+        if self.debug:
         # Write debug files
-        with open(self.get_debug_output_path('logic_inst_mapping_debug.tsv'), 'w') as f:
-            f.write("Type\tSiteInst_Name\tID\n")
-            for idx, inst in enumerate(self.instances['logic'].insts):
-                site_name = inst.getName()
-                f.write(f"Optimizable\t{site_name}\t{idx}\n")
-            f.write(f"TOTAL\t{len(self.instances['logic'])}\n\n")
-            
-        with open(self.get_debug_output_path('io_inst_mapping_debug.tsv'), 'w') as f:
-            f.write("Type\tSiteInst_Name\tID\n")
-            for idx, inst in enumerate(self.instances['io'].insts):
-                site_name = inst.getName()
-                f.write(f"Fixed\t{site_name}\t{idx + offset}\n")
-            f.write(f"TOTAL\t{len(self.instances['io'])}\n\n")
+            with open(self.get_debug_output_path('logic_inst_mapping_debug.tsv'), 'w') as f:
+                f.write("Type\tSiteInst_Name\tID\n")
+                for idx, inst in enumerate(self.instances['logic'].insts):
+                    site_name = inst.getName()
+                    f.write(f"Optimizable\t{site_name}\t{idx}\n")
+                f.write(f"TOTAL\t{len(self.instances['logic'])}\n\n")
+                
+            with open(self.get_debug_output_path('io_inst_mapping_debug.tsv'), 'w') as f:
+                f.write("Type\tSiteInst_Name\tID\n")
+                for idx, inst in enumerate(self.instances['io'].insts):
+                    site_name = inst.getName()
+                    f.write(f"Fixed\t{site_name}\t{idx + offset}\n")
+                f.write(f"TOTAL\t{len(self.instances['io'])}\n\n")
 
     def _init_place_areas(self, design):
         self.total_insts_num = len(design.getSiteInsts())
@@ -247,30 +247,42 @@ class FpgaPlacer:
 
         INFO(f"Sites stat: {self.instances['logic'].num} slice sites, {self.instances['io'].num} fixed sites, {self.other_insts_num} other sites, total {self.total_insts_num} sites.")
         
-        if self.grid_type == GridType.SQUARE:
+        if self.place_mode == IoMode.VIRTUAL_NODE:
+            dim_file = os.path.join(self.result_dir, self.instance_name, 'io_dimensions.txt')
+            if os.path.exists(dim_file):
+                with open(dim_file, 'r') as f:
+                    parts = f.read().strip().split()
+                    if len(parts) >= 2:
+                        io_length = int(parts[0])
+                        io_height = int(parts[1])
+                        thickness = self.grids['io'].thick
+                        if len(parts) >= 3:
+                            thickness = int(parts[2])
+                            self.grids['io'].thick = thickness
+                        
+                        # Logic area is the bounding box minus the boundary thickness on both sides
+                        # Note: If the dimensions provided in tx are just the overall size of the slice grid used
+                        area_length = max(1, io_length - 2 * thickness)
+                        area_height = max(1, io_height - 2 * thickness)
+                        
+                        INFO(f"Virtual IO: Overriding logic area shape to ({area_length}x{area_height}) based on {dim_file}")
+        elif self.grid_type == GridType.SQUARE:
             area_length = int(np.ceil(np.sqrt(self.instances['logic'].num / self.utilization_factor)))
             area_height = area_length
         elif self.grid_type == GridType.RECTAN:
             base_area = self.instances['logic'].num / self.utilization_factor
             logic_depth = self.net_manager.logic_depth
             
-            # Adjust aspect ratio based on logic depth:
-            # - logic_depth > 1.0: deeper logic -> longer length, shorter width
-            # - logic_depth < 1.0: shallower logic -> shorter length, wider width
-            # Use square root of logic depth for aspect ratio adjustment
             aspect_ratio = np.sqrt(logic_depth)
-            
-            # Solve: length * width = base_area, length / width = aspect_ratio
-            # => length = sqrt(base_area * aspect_ratio), width = sqrt(base_area / aspect_ratio)
             area_length = int(np.ceil(np.sqrt(base_area * aspect_ratio)))
             area_height = int(np.ceil(np.sqrt(base_area / aspect_ratio)))
             INFO(f"Using RECT grid: logic_depth_factor={logic_depth:.3f}, aspect_ratio={aspect_ratio:.3f}")
-        
         else:
             # Default fallback
             area_length = int(np.ceil(np.sqrt(self.instances['logic'].num / self.utilization_factor)))
             area_height = 0
-        
+            
+        # Optional override for Virtual Node mode to align logic grid to physical bounded area
         if self.place_mode == IoMode.VIRTUAL_NODE:
             thickness = self.grids['io'].thick
             start_x = thickness
@@ -289,6 +301,9 @@ class FpgaPlacer:
         logic_grid.area_length = area_length
         logic_grid.area_width = area_height
         logic_grid.__post_init__()
+        
+        if self.instances['logic'].num > logic_grid.area:
+            ERROR(f"Logic instances num ({self.instances['logic'].num}) exceeds logic grid area ({logic_grid.area})")
         
         utilization = self.instances['logic'].num / (area_length * area_height)
         
@@ -314,7 +329,9 @@ class FpgaPlacer:
                     if len(parts) >= 2:
                         io_grid.area_length = int(parts[0])
                         io_grid.area_width = int(parts[1])
-                        INFO(f"Loaded IO boundary dimensions loaded from {dim_file}: {io_grid.area_length}x{io_grid.area_width}")
+                        if len(parts) >= 3:
+                            io_grid.thick = int(parts[2])
+                        INFO(f"Loaded IO boundary dimensions loaded from {dim_file}: {io_grid.area_length}x{io_grid.area_width} with thickness {io_grid.thick}")
                     else:
                         io_grid.area_length = self.grids['logic'].area_length + 2 * thickness
                         io_grid.area_width = self.grids['logic'].area_width + 2 * thickness
@@ -325,6 +342,9 @@ class FpgaPlacer:
             # For virtual node mode, io grid is essentially a hollow ring around logic grid
             # and we will enforce boundary constraints in the optimizer/legalizer
             io_grid.__post_init__()
+            
+            if self.instances['io'].num > io_grid.area:
+                ERROR(f"Virtual IO instances num ({self.instances['io'].num}) exceeds Virtual IO grid area ({io_grid.area})")
             
             INFO(f"Virtual IO area (Boundary) - position: ({io_grid.start_x}, {io_grid.start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
             return
@@ -344,6 +364,9 @@ class FpgaPlacer:
         io_grid.area_length = io_length
         io_grid.area_width = io_width
         io_grid.__post_init__()
+        
+        if self.instances['io'].num > io_grid.area:
+            ERROR(f"IO instances num ({self.instances['io'].num}) exceeds IO grid area ({io_grid.area})")
         
         INFO(f"Left IO area - position: ({io_start_x}, {io_start_y}) to ({io_grid.end_x}, {io_grid.end_y})")
 
@@ -451,19 +474,20 @@ class FpgaPlacer:
         self.available_slices_ml = list(device.getAllCompatibleSites(SiteTypeEnum.SLICEL))
         self.available_slices_ml.extend(list(device.getAllCompatibleSites(SiteTypeEnum.SLICEM)))
         self.cells = design.getCells()
-        vivado_hpwl = self.net_manager.analyze_design_hpwl(design)
-        
         self.classify_instances(design)
         self._init_place_areas(design)
         self._init_io_area()
         self._init_clock_buffer_area()
         self.get_available_target_sites(device)
         self._map_site_to_id()
+        vivado_hpwl = self.net_manager.analyze_design_hpwl(design, 
+                                                logic_instances=self.instances['logic'],
+                                                io_instances=self.instances['io'])
         net_num = self.net_manager.analyze_nets(self.instances['logic'], 
                                                 self.instances['io'])
         # self.random_initial_placement(design)
         
-        self._get_place_area_coords()
+        self._get_logic_area_coords()
         self._get_io_area_coords()
         self._get_combined_coords()
 
@@ -476,7 +500,6 @@ class FpgaPlacer:
 
     def save_init_params(self, instance_name, result_dir='result'):
         os.makedirs(os.path.join(result_dir, instance_name), exist_ok=True)
-        
         self.net_manager.set_debug_path(result_dir, instance_name)
         
         params = {
@@ -529,7 +552,7 @@ class FpgaPlacer:
         
         return instance_coords
         
-    def _get_place_area_coords(self):
+    def _get_logic_area_coords(self):
         place_length = self.grids['logic'].area_length
         place_width = self.grids['logic'].area_width
         

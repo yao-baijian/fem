@@ -82,7 +82,6 @@ def generate_objectives_test_data():
     # Test coordinate functions
     inst_indices = torch.argmax(p, dim=2)
     results['inst_indices'] = inst_indices
-    results['inst_coords_from_index'] = fp.get_inst_coords_from_index(inst_indices, area_width)
     results['site_distance_matrix'] = fp.get_site_distance_matrix(site_coords_matrix)
     results['expected_placements'] = fp.get_expected_placements_from_index(p, site_coords_matrix)
     results['hard_placements'] = fp.get_hard_placements_from_index(p, site_coords_matrix)

@@ -1,14 +1,46 @@
 # Usage: source tcl/place_boundary_io.tcl
 # Must be run after synthesis/link_design
 
-proc place_io_registers {clock_region {top_module "default"}} {
-    puts "Placing IO registers on boundary of clock region: $clock_region"
+proc place_io_registers {base_clock_region {top_module "default"}} {
+    puts "Estimating required area starting from clock region: $base_clock_region"
     
-    # 1. Get all Slice sites in the clock region
-    set sites [get_sites -of_objects [get_clock_regions $clock_region] -filter {SITE_TYPE =~ "SLICE*"}]
+    # 1. Get IO Registers and Logic Cells
+    set io_regs [get_cells -hierarchical -filter {REF_NAME == FDRE && NAME =~ "*u_io_reg_*"}]
+    set io_regs [lsort $io_regs]
+
+    if {[llength $io_regs] == 0} {
+        puts "Warning: No IO registers found matching pattern *u_io_reg_*"
+        return
+    }
+
+    set logic_cells [get_cells -hierarchical -filter {IS_PRIMITIVE == 1 && NAME !~ "*u_io_reg_*" && PRIMITIVE_TYPE =~ "FLIPFLOP.*|LUT.*|CARRY.*|MUX.*|SHIFT.*"}]
+    # Divide roughly by 8 (assuming 8 LUTs/FFs per SLICE on average) to estimate required SLICE sites
+    set num_logic [llength $logic_cells]
+    set required_sites [expr {($num_logic + 7) / 8}]
     
+    regexp {X(\d+)Y(\d+)} $base_clock_region match cr_x cr_y
+    set current_cr_y $cr_y
+    set cr_list [list $base_clock_region]
+    
+    set sites [get_sites -of_objects [get_clock_regions $base_clock_region] -filter {SITE_TYPE =~ "SLICE*"}]
+    
+    while {[llength $sites] < $required_sites} {
+        incr current_cr_y
+        set next_cr "X${cr_x}Y${current_cr_y}"
+        set cr_obj [get_clock_regions -quiet $next_cr]
+        if {[llength $cr_obj] == 0} {
+            puts "Warning: Reached edge of device, cannot expand to $next_cr"
+            break
+        }
+        lappend cr_list $next_cr
+        set sites [get_sites -of_objects [get_clock_regions $cr_list] -filter {SITE_TYPE =~ "SLICE*"}]
+        puts "Expanded clock regions to $cr_list, total SLICE sites: [llength $sites]"
+    }
+    
+    puts "Placing IO registers on boundary of clock regions: $cr_list"
+
     if {[llength $sites] == 0} {
-        puts "Error: No slice sites found in clock region $clock_region"
+        puts "Error: No slice sites found in clock region $base_clock_region"
         return
     }
 
@@ -35,56 +67,75 @@ proc place_io_registers {clock_region {top_module "default"}} {
     set min_y [lindex $y_coords 0]
     set max_y [lindex $y_coords end]
 
-    puts "Clock Region $clock_region Bounding Box: X\[$min_x:$max_x\] Y\[$min_y:$max_y\]"
+    puts "Clock Regions $cr_list Bounding Box: X\[$min_x:$max_x\] Y\[$min_y:$max_y\]"
 
     # 3. Collect boundary sites in order (Bottom -> Right -> Top -> Left)
     set boundary_sites {}
+    set ring 0
+    set collected_sites 0
+    set required_sites [llength $io_regs]
 
-    # Bottom Edge (y = min_y, x increases)
-    foreach x $x_coords {
-        if {[info exists site_map($x,$min_y)]} {
-            lappend boundary_sites $site_map($x,$min_y)
-        }
-    }
+    while {$collected_sites < $required_sites} {
+        set cur_min_x [lindex $x_coords $ring]
+        set cur_max_x [lindex $x_coords end-$ring]
+        set cur_min_y [lindex $y_coords $ring]
+        set cur_max_y [lindex $y_coords end-$ring]
 
-    # Right Edge (x = max_x, y increases, exclude corners to avoid dupes)
-    foreach y $y_coords {
-        if {$y == $min_y || $y == $max_y} continue
-        if {[info exists site_map($max_x,$y)]} {
-            lappend boundary_sites $site_map($max_x,$y)
+        if {$cur_min_x == "" || $cur_max_x == "" || $cur_min_x > $cur_max_x || $cur_min_y > $cur_max_y} {
+            break
         }
-    }
 
-    # Top Edge (y = max_y, x decreases)
-    set x_coords_rev [lsort -decreasing -integer $x_coords]
-    foreach x $x_coords_rev {
-        if {[info exists site_map($x,$max_y)]} {
-            lappend boundary_sites $site_map($x,$max_y)
+        # Bottom Edge (y = cur_min_y, x increases)
+        foreach x $x_coords {
+            if {$x >= $cur_min_x && $x <= $cur_max_x} {
+                if {[info exists site_map($x,$cur_min_y)]} {
+                    lappend boundary_sites $site_map($x,$cur_min_y)
+                    incr collected_sites
+                }
+            }
         }
-    }
 
-    # Left Edge (x = min_x, y decreases, exclude corners)
-    set y_coords_rev [lsort -decreasing -integer $y_coords]
-    foreach y $y_coords_rev {
-        if {$y == $min_y || $y == $max_y} continue
-        if {[info exists site_map($min_x,$y)]} {
-            lappend boundary_sites $site_map($min_x,$y)
+        # Right Edge (x = cur_max_x, y increases, exclude corners)
+        foreach y $y_coords {
+            if {$y > $cur_min_y && $y < $cur_max_y} {
+                if {[info exists site_map($cur_max_x,$y)]} {
+                    lappend boundary_sites $site_map($cur_max_x,$y)
+                    incr collected_sites
+                }
+            }
         }
+
+        # Top Edge (y = cur_max_y, x decreases)
+        if {$cur_max_y > $cur_min_y} {
+            set x_coords_rev [lsort -decreasing -integer $x_coords]
+            foreach x $x_coords_rev {
+                if {$x >= $cur_min_x && $x <= $cur_max_x} {
+                    if {[info exists site_map($x,$cur_max_y)]} {
+                        lappend boundary_sites $site_map($x,$cur_max_y)
+                        incr collected_sites
+                    }
+                }
+            }
+        }
+
+        # Left Edge (x = cur_min_x, y decreases, exclude corners)
+        if {$cur_max_x > $cur_min_x} {
+            set y_coords_rev [lsort -decreasing -integer $y_coords]
+            foreach y $y_coords_rev {
+                if {$y > $cur_min_y && $y < $cur_max_y} {
+                    if {[info exists site_map($cur_min_x,$y)]} {
+                        lappend boundary_sites $site_map($cur_min_x,$y)
+                        incr collected_sites
+                    }
+                }
+            }
+        }
+
+        incr ring
     }
     
-    puts "Found [llength $boundary_sites] boundary slice sites."
+    puts "Found [llength $boundary_sites] boundary slice sites in $ring rings."
 
-    # 4. Get IO Registers
-    # Assuming names like u_io_reg_in_* and u_io_reg_out_*
-    # We want FDRE cells.
-    set io_regs [get_cells -hierarchical -filter {REF_NAME == FDRE && NAME =~ "*u_io_reg_*"}]
-    set io_regs [lsort $io_regs]
-
-    if {[llength $io_regs] == 0} {
-        puts "Warning: No IO registers found matching pattern *u_io_reg_*"
-        return
-    }
-    
     if {[llength $io_regs] > [llength $boundary_sites]} {
         puts "Warning: More IO registers ([llength $io_regs]) than boundary sites ([llength $boundary_sites]). Some will be unplaced."
     }
@@ -103,8 +154,17 @@ proc place_io_registers {clock_region {top_module "default"}} {
     set width [expr $max_y - $min_y + 1]
     set length [expr $max_x - $min_x + 1]
     set fp_dim [open "../result/${top_module}/io_dimensions.txt" w]
-    puts $fp_dim "$length $width"
+    puts $fp_dim "$length $width $ring"
     close $fp_dim
+
+    # Shuffle boundary sites for random placement
+    set n [llength $boundary_sites]
+    for {set i 0} {$i < $n} {incr i} {
+        set j [expr {int(rand() * $n)}]
+        set temp [lindex $boundary_sites $i]
+        lset boundary_sites $i [lindex $boundary_sites $j]
+        lset boundary_sites $j $temp
+    }
 
     # 5. Assign Locations
     set idx 0
@@ -130,9 +190,9 @@ proc place_io_registers {clock_region {top_module "default"}} {
     puts "Placed $idx IO registers on boundary."
 }
 
-# Auto-execute if sourced
-# But let the caller call it with a specific CR.
-# Default to X2Y2 roughly in middle for safety if args provided
-if { $argc > 0 } {
-    place_io_registers [lindex $argv 0]
-}
+# # Auto-execute if sourced
+# # But let the caller call it with a specific CR.
+# # Default to X2Y2 roughly in middle for safety if args provided
+# if { $argc > 0 } {
+#     place_io_registers [lindex $argv 0]
+# }

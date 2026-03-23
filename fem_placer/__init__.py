@@ -14,8 +14,6 @@ from .timer import Timer
 
 # QUBO approach (site_coords_matrix based)
 from .objectives import (
-    get_inst_coords_from_index,
-    get_io_coords_from_index,
     get_site_distance_matrix,
     get_expected_placements_from_index,
     get_hard_placements_from_index,
@@ -50,8 +48,6 @@ __all__ = [
     'Timer',
 
     # QUBO functions
-    'get_inst_coords_from_index',
-    'get_io_coords_from_index',
     'get_site_distance_matrix',
     'get_expected_placements_from_index',
     'get_hard_placements_from_index',

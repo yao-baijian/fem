@@ -52,37 +52,6 @@ def clear_history():
 # Coordinate Functions (QUBO approach)
 # =============================================================================
 
-def get_inst_coords_from_index(inst_indices, area_width):
-    x_coords = inst_indices // area_width
-    y_coords = inst_indices % area_width
-    coords = torch.stack([x_coords, y_coords], dim=2)
-    return coords.float()
-
-
-def get_io_coords_from_index(inst_indices, io_site_coords=None):
-    """
-    Convert IO instance indices to coordinates.
-
-    Args:
-        inst_indices: IO instance indices [batch_size, num_io]
-        io_site_coords: Optional tensor of valid IO physical coordinates [num_sites, 2]. 
-                        If provided, directly returns the coordinates of the selected indices.
-
-    Returns:
-        coords: IO coordinates [batch_size, num_io, 2]
-    """
-    if io_site_coords is not None:
-        # Avoid direct float index, ensure integer indices
-        indices_long = inst_indices.long()
-        # [batch_size, num_io, 2]
-        return io_site_coords[indices_long]
-
-    x_coords = torch.full_like(inst_indices, 0, dtype=torch.int32)
-    y_coords = inst_indices
-    coords = torch.stack([x_coords, y_coords], dim=2)
-    return coords.float()
-
-
 def count_duplicate_coords(coords):
     """
     Count duplicate coordinate pairs and calculate sum of (count - 1) for each unique pair.
@@ -309,6 +278,22 @@ def get_constraints_loss(p, alpha):
     site_constraint = torch.sum(30 * Func.softplus(site_usage - 1)**2, dim=1)
     return alpha * site_constraint
 
+# def get_constraints_loss_rev(p, alpha):
+#     """
+#     Calculate site capacity constraint loss following the QUBO formulation in Eq. (10).
+
+#     Args:
+#         p: Probability distribution [batch_size, num_instances, num_sites]
+#         alpha: Penalty coefficient (λ in Eq. (10))
+
+#     Returns:
+#         site_constraint: Constraint loss for each batch [batch_size]
+#     """
+#     site_usage = torch.sum(p, dim=1)                     # [batch_size, num_sites]
+#     # Standard quadratic penalty: (∑ p_ij - 1)^2
+#     site_constraint = 30 * torch.sum((site_usage - 1) ** 2, dim=1)
+#     return alpha * site_constraint
+
 
 def get_constraints_loss_with_io(p_logic, p_io, alpha, beta):
     """
@@ -428,7 +413,7 @@ def manual_grad_placement(p, J, site_coords_matrix, lambda_constraint=30.0):
 # Expected Placement Loss Functions (QUBO approach)
 # =============================================================================
 
-def expected_fpga_placement(J, p, D, step, area_width, alpha):
+def expected_fpga_placement(J, p, D, step, site_coords_matrix, alpha):
     """
     Calculate expected placement loss (HPWL + constraints).
 
@@ -447,6 +432,7 @@ def expected_fpga_placement(J, p, D, step, area_width, alpha):
 
     hpwl = get_hpwl_loss_qubo(J, p, D)
     constrain_loss = get_constraints_loss(p, alpha)
+    # constrain_loss = get_constraints_loss_rev(p, alpha)
 
     hpwl_val = hpwl
     total_val = hpwl_val + constrain_loss
@@ -457,7 +443,7 @@ def expected_fpga_placement(J, p, D, step, area_width, alpha):
 
     if step in show_steps:
         inst_indices = torch.argmax(p, dim=2)
-        inst_coords = get_inst_coords_from_index(inst_indices, area_width)
+        inst_coords = site_coords_matrix[inst_indices]
         _placement_history.append(inst_coords)
 
     return hpwl + constrain_loss
@@ -1000,14 +986,14 @@ def solve_placement_cyclic(
     return site_indices, coords, best_cost, metadata
 
 
-def infer_placements(J, p, area_width, D):
+def infer_placements(J, p, logic_site_coords, D):
     """
     Infer final placements from probability distribution (matches master exactly).
 
     Args:
         J: Coupling matrix [num_instances, num_instances]
         p: Probability distribution [batch_size, num_instances, num_sites]
-        area_width: Width of the placement area
+        logic_site_coords: Site coordinates [num_sites, 2]
         D: Distance matrix [num_sites, num_sites]
 
     Returns:
@@ -1015,15 +1001,15 @@ def infer_placements(J, p, area_width, D):
         hpwl: HPWL values [batch_size]
     """
     inst_indices = torch.argmax(p, dim=2)
-    inst_coords = get_inst_coords_from_index(inst_indices, area_width)
+    inst_coords = logic_site_coords[inst_indices]
     result = get_hpwl_loss_qubo(J, p, D)
     return inst_coords, result
 
 
 def infer_placements_with_io(J_LL, J_LI, 
                              p_logic, p_io, 
-                             area_width, 
-                             D_LL, D_LI, io_site_coords=None):
+                             logic_site_coords, 
+                             D_LL, D_LI, io_site_coords):
     """
     Infer final placements including IO from probability distributions.
 
@@ -1032,9 +1018,9 @@ def infer_placements_with_io(J_LL, J_LI,
         J_LI: Logic-IO coupling matrix
         p_logic: Logic probability distribution
         p_io: IO probability distribution
-        area_width: Width of the placement area
+        logic_site_coords: Logic site coordinates [num_logic_sites, 2]
         D_LL, D_LI: Distance matrices
-        io_site_coords: Optional valid site coordinates for IO.
+        io_site_coords: Valid site coordinates for IO.
 
     Returns:
         coords: List of [logic_coords, io_coords]
@@ -1042,11 +1028,13 @@ def infer_placements_with_io(J_LL, J_LI,
     """
     logic_inst_indices = torch.argmax(p_logic, dim=2)
     io_inst_indices = torch.argmax(p_io, dim=2)
-    logic_inst_coords = get_inst_coords_from_index(logic_inst_indices, area_width)
-    io_inst_coords = get_io_coords_from_index(io_inst_indices, io_site_coords=io_site_coords)
+    
+    logic_inst_coords = logic_site_coords[logic_inst_indices]
+    io_inst_coords = io_site_coords[io_inst_indices]
 
-    duplicate_count, unique_coords, counts = count_duplicate_coords(io_inst_coords)
-    INFO(f"Total duplicate sum: {duplicate_count}")
+    logic_overlap, _, _ = count_duplicate_coords(logic_inst_coords)
+    io_overlap, _, _ = count_duplicate_coords(io_inst_coords)
+    INFO(f"Logic overlap: {logic_overlap}, IO overlap: {io_overlap}")
 
     result = get_hpwl_loss_qubo_with_io(J_LL, J_LI, 
                                         p_logic, p_io, 
