@@ -124,10 +124,11 @@ class FPGAPlacementOptimizer:
         params = data['params']
         tensors = data['tensors']
         
-        coupling_matrix = torch.tensor(tensors['coupling_matrix'], dtype=torch.float32) if 'coupling_matrix' in tensors else None
-        site_coords_matrix = torch.tensor(tensors['site_coords_matrix'], dtype=torch.float32) if 'site_coords_matrix' in tensors else None
-        io_site_connect_matrix = torch.tensor(tensors['io_site_connect_matrix'], dtype=torch.float32) if 'io_site_connect_matrix' in tensors else None
-        io_site_coords = torch.tensor(tensors['io_site_coords'], dtype=torch.float32) if 'io_site_coords' in tensors else None
+        target_dev = kwargs.get('dev', params.get('device', 'cpu'))
+        coupling_matrix = torch.tensor(tensors['coupling_matrix'], dtype=torch.float32, device=target_dev) if 'coupling_matrix' in tensors else None
+        site_coords_matrix = torch.tensor(tensors['site_coords_matrix'], dtype=torch.float32, device=target_dev) if 'site_coords_matrix' in tensors else None
+        io_site_connect_matrix = torch.tensor(tensors['io_site_connect_matrix'], dtype=torch.float32, device=target_dev) if 'io_site_connect_matrix' in tensors else None
+        io_site_coords = torch.tensor(tensors['io_site_coords'], dtype=torch.float32, device=target_dev) if 'io_site_coords' in tensors else None
         
         place_orientation = PlaceType[params['place_orientation']] if params['place_orientation'] in PlaceType.__members__ else PlaceType.CENTERED
         grid_type = GridType[params['grid_type']] if params['grid_type'] in GridType.__members__ else GridType.SQUARE
@@ -144,7 +145,7 @@ class FPGAPlacementOptimizer:
             'io_site_coords': io_site_coords,
             'constraint_alpha': params['constraint_alpha'],
             'constraint_beta': params['constraint_beta'],
-            'dev': params['device'],
+            'dev': target_dev,
             'dtype': torch.float32,
             'with_io': params['with_io'],
         }
