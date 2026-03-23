@@ -46,18 +46,26 @@ class NetManager:
     def set_debug_path(self, result_dir='result', instance_name=None):
         self.debug_src_root = os.path.join(result_dir, instance_name) if instance_name else result_dir
 
-    def analyze_design_hpwl(self, design):
+    def analyze_design_hpwl(self, design, logic_instances=None, io_instances=None):
         self.hpwl_calculator.clear()
         self.nets = design.getNets()
         self.net_names = [net.getName() for net in self.nets]
 
         for net in self.nets:
             net_name = net.getName()
-            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, True)
+            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, 
+                                                              net_name, 
+                                                              include_io=True, 
+                                                              logic_instances=logic_instances, 
+                                                              io_instances=io_instances)
 
         for net in self.nets:
             net_name = net.getName()
-            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, net_name, False)
+            self.hpwl_calculator.compute_net_hpwl_rapidwright(net, 
+                                                              net_name, 
+                                                              include_io=False, 
+                                                              logic_instances=logic_instances, 
+                                                              io_instances=io_instances)
 
         hpwl = self.hpwl_calculator.get_hpwl()
         INFO(f"Nets num: {len(self.nets)}, total hpwl: {hpwl['hpwl']:.2f}, without io: {hpwl['hpwl_no_io']:.2f} ")
@@ -262,7 +270,9 @@ class NetManager:
 
         self._create_net_tensor(valid_net_num, sites_net_list, logic_insts_num)
         self._create_net_matrix(logic_insts_num, io_insts_num)
-        self.save_tensor_debug_info(instance_count=logic_insts_num)
+        if self.debug:
+            self.save_tensor_debug_info(instance_count=logic_insts_num)
+            self.save_matrix_debug_info(logic_insts_num, io_insts_num)
         INFO(f"Processed {valid_net_num} nets, total {len(self.nets)} nets",
               f" {len(self.site_to_site_connectivity)} site-to-site routes",
               f" {len(self.io_to_site_connectivity)} io-to-site routes",
@@ -313,8 +323,8 @@ class NetManager:
                     self.site_to_site_connectivity[inst2][inst1] = 0
                 self.site_to_site_connectivity[inst2][inst1] += 1
 
-    def _create_net_tensor(self, valid_net_num, sites_net_list, optimizable_insts_num):
-        self.net_tensor = torch.zeros(valid_net_num, optimizable_insts_num, dtype=torch.bool)
+    def _create_net_tensor(self, valid_net_num, sites_net_list, logic_insts_num):
+        self.net_tensor = torch.zeros(valid_net_num, logic_insts_num, dtype=torch.bool)
 
         for net_idx, sites in enumerate(sites_net_list):
             site_idx = []
@@ -325,9 +335,9 @@ class NetManager:
 
         INFO(f"Net tensor shape {self.net_tensor.shape[0]} x {self.net_tensor.shape[1]}")
 
-    def _create_net_matrix(self, optimizable_insts_num, fixed_insts_num):
-        n = optimizable_insts_num
-        k = fixed_insts_num
+    def _create_net_matrix(self, logic_insts_num, io_insts_num):
+        n = logic_insts_num
+        k = io_insts_num
         self.insts_matrix = torch.zeros((n, n), device=self.device)
 
         for source_site, connections in self.site_to_site_connectivity.items():
@@ -361,6 +371,7 @@ class NetManager:
 
         INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
 
+    def save_matrix_debug_info(self, n, k):
         original_options = np.get_printoptions()
         # Set print options to show full matrix without truncation
         np.set_printoptions(threshold=np.inf, linewidth=np.inf)
@@ -402,20 +413,15 @@ class NetManager:
             instance_count = self.net_tensor.shape[1]
 
         with open(output_path, 'w') as f:
-            # 写入标题行
             f.write("Net_IDX\tNet_Name")
             for instance_idx in range(instance_count):
                 f.write(f"\t{instance_idx}")
             f.write("\n")
-
-            # 写入每个网络的信息
             for net_idx in range(num_nets):
-                # 获取网络名称
                 net_name = self.net_to_sites.get(net_idx, {}).get('name', f'Net_{net_idx}')
                 f.write(f"{net_idx}\t{net_name}")
 
                 for instance_idx in range(instance_count):
-                    # 检查索引是否在有效范围内
                     if instance_idx < self.net_tensor.shape[1]:
                         value = 1 if self.net_tensor[net_idx, instance_idx] else 0
                     else:
@@ -423,7 +429,6 @@ class NetManager:
                     f.write(f"\t{value}")
                 f.write("\n")
 
-            # 添加汇总信息
             f.write(f"\n=== Summary ===\n")
             f.write(f"Total Nets: {num_nets}\n")
             f.write(f"Total Instances: {instance_count}\n")
