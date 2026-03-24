@@ -1,34 +1,26 @@
-# 定义目标列表
-# set benchmarks {
-#     c880 C:\\Project\\Benchmarks\\ISCAS85\\c880.v
-#     c1355 C:\\Project\\Benchmarks\\ISCAS85\\c1355.v
-#     c2670 C:\\Project\\Benchmarks\\ISCAS85\\c2670.v
-#     c5315 C:\\Project\\Benchmarks\\ISCAS85\\c5315.v
-#     c6288 C:\\Project\\Benchmarks\\ISCAS85\\c6288.v
-#     c7552 C:\\Project\\Benchmarks\\ISCAS85\\c7552.v
-#     s713 C:\\Project\\Benchmarks\\ISCAS89\\s713.v
-#     s1238 C:\\Project\\Benchmarks\\ISCAS89\\s1238.v
-#     s1488 C:\\Project\\Benchmarks\\ISCAS89\\s1488.v
-#     s5378 C:\\Project\\Benchmarks\\ISCAS89\\s5378.v
-#     s9234 C:\\Project\\Benchmarks\\ISCAS89\\s9234.v
-#     s15850 C:\\Project\\Benchmarks\\ISCAS89\\s15850.v
-# }
+# c880 /home/byao/Desktop/Benchmarks/ISCAS85/c880/c880.v
+# c1355 /home/byao/Desktop/Benchmarks/ISCAS85/c1355/c1355.v
+# c2670 /home/byao/Desktop/Benchmarks/ISCAS85/c2670/c2670.v
+# c5315 /home/byao/Desktop/Benchmarks/ISCAS85/c5315/c5315.v
+# c6288 /home/byao/Desktop/Benchmarks/ISCAS85/c6288/c6288.v
+# c7552 /home/byao/Desktop/Benchmarks/ISCAS85/c7552/c7552.v
+# s713 /home/byao/Desktop/Benchmarks/ISCAS89/s713.v
+# s1238 /home/byao/Desktop/Benchmarks/ISCAS89/s1238.v
+# s1488 /home/byao/Desktop/Benchmarks/ISCAS89/s1488.v
+# s5378 /home/byao/Desktop/Benchmarks/ISCAS89/s5378.v
+# s9234 /home/byao/Desktop/Benchmarks/ISCAS89/s9234.v
+# s15850 /home/byao/Desktop/Benchmarks/ISCAS89/s15850.v
 
 set benchmarks {
-    c880 /home/byao/Desktop/Benchmarks/ISCAS85/c880/c880.v
-    c1355 /home/byao/Desktop/Benchmarks/ISCAS85/c1355/c1355.v
     c2670 /home/byao/Desktop/Benchmarks/ISCAS85/c2670/c2670.v
     c5315 /home/byao/Desktop/Benchmarks/ISCAS85/c5315/c5315.v
     c6288 /home/byao/Desktop/Benchmarks/ISCAS85/c6288/c6288.v
     c7552 /home/byao/Desktop/Benchmarks/ISCAS85/c7552/c7552.v
-    s713 /home/byao/Desktop/Benchmarks/ISCAS89/s713.v
-    s1238 /home/byao/Desktop/Benchmarks/ISCAS89/s1238.v
     s1488 /home/byao/Desktop/Benchmarks/ISCAS89/s1488.v
     s5378 /home/byao/Desktop/Benchmarks/ISCAS89/s5378.v
     s9234 /home/byao/Desktop/Benchmarks/ISCAS89/s9234.v
     s15850 /home/byao/Desktop/Benchmarks/ISCAS89/s15850.v
 }
-
 
 set part_name {xcvu065-ffvc1517-1-i}
 set base_output_dir {output_dir}
@@ -64,7 +56,14 @@ foreach {top_module rtl_file} $benchmarks {
     
     # 布局
     puts "Running placement for $top_module..."
+    set place_start [clock seconds]
     place_design
+    set place_end [clock seconds]
+    set place_time [expr {$place_end - $place_start}]
+
+    set fp [open [file join $output_dir "place_time.txt"] w]
+    puts $fp $place_time
+    close $fp
     
     # 布线
     puts "Running routing for $top_module..."
