@@ -3,19 +3,22 @@ import os
 import io
 import contextlib
 import json
+import time
 sys.path.insert(0, '.')
 
 import torch
 import itertools
 from fem_placer import FPGAPlacementOptimizer, solve_placement_sb
 from fem_placer.logger import *
+from scripts.sbm_optimizer import solve_placement_sb_lazy
+
 SET_LEVEL('WARNING')
 
-def evaluate_params(J, logic_site_coords, num_inst, lam, mu, agents, max_steps):
+def evaluate_params(J, D, logic_site_coords, num_inst, lam, mu, agents, max_steps):
     # Suppress output from simulated-bifurcation solver
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        site_indices, grid_coords, energy, meta = solve_placement_sb(
-            J, logic_site_coords,
+        site_indices, grid_coords, energy, meta = solve_placement_sb_lazy(
+            J, D, logic_site_coords,
             lam=lam, mu=mu,
             agents=agents, max_steps=max_steps,
             best_only=True,
@@ -33,11 +36,15 @@ def tune_parameters_no_vivado(instance, lam_vals, mu_vals, dev='cpu', agents=16,
         num_steps=1,
         dev=dev
     )
+    optimizer._initialize()
 
-    J = optimizer.J_LL.cpu()
+    J = optimizer.coupling_matrix.cpu()
     num_inst = J.shape[0]
     
-    D = optimizer.D_LL.cpu()
+    if optimizer.with_io:
+        D = optimizer.D_LL.cpu()
+    else:
+        D = optimizer.D.cpu()
     # site coords extraction based on D size implicitly (assumes n_sites grid)
     # The actual FpgaPlacementOptimizer contains n_sites, though we don't have explicit grid width/height
     # However, solve_placement_sb accepts site_coords. We reconstruct it or grab it if stored
@@ -66,8 +73,17 @@ def tune_parameters_no_vivado(instance, lam_vals, mu_vals, dev='cpu', agents=16,
     J_max = J.max().item()
     D_max = D.max().item()
     max_coupling = J_max * D_max
-    print(f"Max coupling (J_max * D_max) approx = {max_coupling:.2f}")
     
+    # Check QUBO matrix size to avoid OOM kills (Code 137)
+    # The full QUBO matrix will be of size (num_inst * n_sites + n_sites)^2
+    qubo_dim = num_inst * n_sites + n_sites
+    est_memory_gb = (qubo_dim ** 2) * 4 / (1024 ** 3)
+    print(f"Max coupling (J_max * D_max) approx = {max_coupling:.2f}")
+    print(f"Estimated QUBO dense matrix size: {qubo_dim}x{qubo_dim} ({est_memory_gb:.2f} GB)")
+    
+    # if est_memory_gb > 8.0:  # Prevent OOM killer on normal systems (adjust threshold as needed)
+    #     raise MemoryError(f"Estimated memory for QUBO matrix ({est_memory_gb:.2f} GB) exceeds safe threshold (8.0 GB). Skipping to avoid OOM kill.")
+
     results = []
     print(f"{'lam':<10} | {'mu':<10} | {'Overlap':<10} | {'Energy':<15}")
     print("-" * 50)
@@ -75,7 +91,7 @@ def tune_parameters_no_vivado(instance, lam_vals, mu_vals, dev='cpu', agents=16,
     for lam, mu in itertools.product(lam_vals, mu_vals):
         if lam >= mu:
             continue
-        overlap, energy = evaluate_params(J, logic_site_coords, num_inst, lam, mu, agents, max_steps)
+        overlap, energy = evaluate_params(J, D, logic_site_coords, num_inst, lam, mu, agents, max_steps)
         results.append((lam, mu, overlap, energy))
         print(f"{lam:<10.2f} | {mu:<10.2f} | {overlap:<10} | {energy:<15.2f}")
         
@@ -90,7 +106,10 @@ def tune_parameters_no_vivado(instance, lam_vals, mu_vals, dev='cpu', agents=16,
 
 
 if __name__ == "__main__":
-    test_instances = ['FPGA-example1'] # Replace with actual instances available in result/ directory
+    # test_instances = ['c2670', 'c5315', 'c6288', 'c7552',
+    #                   's1488', 's5378', 's9234', 's15850', 'FPGA-example1'] # Replace with actual instances available in result/ directory
+    
+    test_instances = ['bgm', 'sha1', 'RLE_BlobMerging']
     
     lam_values_coarse = [0.1, 1.0, 10.0, 100.0, 1000.0, 5000.0]
     mu_values_coarse = [0.1, 1.0, 10.0, 100.0, 1000.0, 5000.0]
@@ -107,7 +126,7 @@ if __name__ == "__main__":
         print(f"{'='*50}")
         
         try:
-            best_lam, best_mu = tune_parameters_no_vivado(instance, lam_values_coarse, mu_values_coarse, dev=dev, agents=16, max_steps=1000)
+            best_lam, best_mu = tune_parameters_no_vivado(instance, lam_values_coarse, mu_values_coarse, dev=dev, agents=10, max_steps=1000)
         except Exception as e:
             print(f"Skipping {instance} due to error (perhaps init_params not found): {e}")
             continue
@@ -122,7 +141,7 @@ if __name__ == "__main__":
         lam_values_fine = [max(best_lam - lam_step, 0.1), best_lam, best_lam + lam_step]
         mu_values_fine = [max(best_mu - mu_step, 0.1), best_mu, best_mu + mu_step]
         
-        final_lam, final_mu = tune_parameters_no_vivado(instance, lam_values_fine, mu_values_fine, dev=dev, agents=16, max_steps=2000)
+        final_lam, final_mu = tune_parameters_no_vivado(instance, lam_values_fine, mu_values_fine, dev=dev, agents=10, max_steps=1000)
         
         if final_lam is not None:
             print(f"\nFinal best parameters for {instance} after fine-tuning:")

@@ -11,6 +11,7 @@ Uses the master branch FpgaPlacer API (net_manager for coupling matrix).
 """
 
 import sys
+import time
 sys.path.insert(0, '.')
 
 import torch
@@ -28,7 +29,9 @@ SET_LEVEL('INFO')
 #              's1238', 's1488', 's5378', 's9234', 's15850']
 
 # instances = ['bgm', 'sha1', 'diffeq_f_systemC', 'FPGA-example1']
-instances = ['RLE_BlobMerging']
+# instances = ['RLE_BlobMerging']
+instances = ['c2670', 'c2670', 'c5315', 'c6288', 'c7552',
+             's1488', 's5378', 's9234', 's15850', 'bgm', 'sha1', 'RLE_BlobMerging', 'FPGA-example1']
 # Configuration
 max_iters = 200
 k = 60          # instances per iteration
@@ -36,7 +39,7 @@ k_u = 30        # unbound sites per iteration
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'Overlap':<8} "
-      f"{'HPWL Init':<14} {'HPWL Final':<14} {'QAP Cost':<12} {'Iters':<6}")
+      f"{'HPWL Init':<14} {'HPWL Final':<14} {'QAP Cost':<12} {'Iters':<6} {'Time (s)':<10}")
 
 for instance in instances:
     dcp_file = f'./vivado/output_dir/{instance}/post_impl.dcp'
@@ -62,11 +65,13 @@ for instance in instances:
 
     # Solve with CyclicExpansion
     INFO("Solving placement with CyclicExpansion...")
+    start_time = time.time()
     site_indices, grid_coords, energy, meta = solve_placement_cyclic(
         J, logic_site_coords,
         k=k, k_u=k_u, max_iters=max_iters,
         seed=42, verbose=True,
     )
+    elapsed_time = time.time() - start_time
 
     # Check feasibility (CyclicExpansion guarantees unique sites by construction)
     n_unique = len(torch.unique(site_indices))
@@ -91,4 +96,4 @@ for instance in instances:
     hpwl_after = hpwl_after['hpwl_no_io']
 
     print(f"{'Benchmarks':<12} {instance:<10} {inst_num:<6} {overlap:<8}"
-        f"{hpwl_before:<14.2f} {hpwl_after:<14.2f} {energy:12.2f} {iterations:<6}")
+        f"{hpwl_before:<14.2f} {hpwl_after:<14.2f} {energy:12.2f} {iterations:<6} {elapsed_time:<10.2f}")
