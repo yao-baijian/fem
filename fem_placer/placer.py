@@ -506,7 +506,7 @@ class FpgaPlacer:
             'num_inst': self.instances['logic'].num,
             'num_fixed_inst': self.instances['io'].num,
             'num_site': self.grids['logic'].area,
-            'num_fixed_site': self.grids['io'].area_width,
+            'num_fixed_site': self.grids['io'].area,
             'logic_grid_width': self.grids['logic'].area_width,
             'constraint_alpha': self.constraint_alpha,
             'constraint_beta': self.constraint_beta,

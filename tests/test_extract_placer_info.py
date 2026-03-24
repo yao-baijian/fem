@@ -15,9 +15,14 @@ from ml.dataset import *
 
 SET_LEVEL('WARNING')
 
-instances = ['c2670', 'c5315', 'c6288', 'c7552',
-             's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
-            
+# instances = ['c2670', 'c5315', 'c6288', 'c7552',
+#              's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+
+# instances = ['bgm', 'sha1', 'RLE_BlobMerging']
+
+instances = ['c2670_boundary', 'c5315_boundary', 'c6288_boundary', 'c7552_boundary',
+             's1488_boundary', 's5378_boundary', 's9234_boundary', 's15850_boundary', 'bgm_boundary', 'sha1_boundary', 'RLE_BlobMerging_boundary', 'FPGA-example1_boundary']
+
 num_trials = 5
 num_steps = 200
 dev = 'cpu'
@@ -25,14 +30,16 @@ manual_grad = False
 anneal='lin'
 
 for instance in instances:
-    place_type = PlaceType.CENTERED
+    place_type = PlaceType.IO
     debug = False
     fpga_placer = FpgaPlacer(place_orientation = place_type, 
                             grid_type = GridType.SQUARE,
-                            place_mode = IoMode.NORMAL,
+                            place_mode = IoMode.VIRTUAL_NODE,
                             utilization_factor = 0.4,
                             debug = debug,
                             device = dev)
+    
+    fpga_placer.set_instance_name(instance)
     
     vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
     fpga_placer.set_alpha(30)

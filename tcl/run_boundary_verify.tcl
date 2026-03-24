@@ -58,7 +58,17 @@ place_io_registers $clock_region "${top_module}_boundary"
 
 # 6. Implementation Flow
 opt_design
+
+set place_start [clock seconds]
 place_design
+set place_end [clock seconds]
+set place_time [expr {$place_end - $place_start}]
+
+# Write placement time to a file for Python script to read
+set fp [open "${output_dir}/place_time.txt" w]
+puts $fp $place_time
+close $fp
+
 route_design
 
 # 7. Reports

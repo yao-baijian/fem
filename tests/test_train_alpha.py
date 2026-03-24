@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import json
 import os
+import time
 sys.path.insert(0, '.')
 
 from fem_placer import (
@@ -49,7 +50,11 @@ if USE_COARSE_CACHE and os.path.exists(COARSE_CACHE_FILE):
 clear_dataset(with_io=False)
 clear_dataset(with_io=True)
 
+print(f"{'Instance':<15} | {'Best HPWL':<10} | {'Overlap':<10} | {'In Range':<10} | {'Alpha':<10} | {'Beta':<10} | {'Time (s)':<10}")
+print("-" * 88)
+
 for instance in instances:
+    start_time = time.time()
     place_type = PlaceType.CENTERED
     debug = False
     fpga_placer = FpgaPlacer(place_orientation = place_type, 
@@ -147,37 +152,25 @@ for instance in instances:
         }
 
     # ==================== COARSE SWEEP ====================
-    print(f"\n{'='*80}")
-    print(f"Instance: {instance}, Place Type: {place_type.name}")
-    
     coarse_results = []
     
     # Check if this instance is in cache
     cache_key = instance
     if USE_COARSE_CACHE and cache_key in coarse_cache:
-        print(f"Using cached coarse results for {instance}")
         cached_a1_info = coarse_cache[cache_key]
         a1 = cached_a1_info['a1']
         b1 = cached_a1_info.get('b1', 0.0)  # Default to 0 if not in cache
-        print(f"Cached a1={a1}, b1={b1}")
     else:
-        print("Running coarse sweep...")
-        
         if place_type == PlaceType.IO:
             # 2D grid search for IO placement
             beta_start = 0
             beta_end = 100
             beta_step = 5
             
-            print(f"2D Coarse sweep: alpha=[{coarse_start}..{coarse_end}], beta=[{beta_start}..{beta_end}]")
-            
             for used_alpha in range(coarse_start, coarse_end, coarse_step):
                 for used_beta in range(beta_start, beta_end, beta_step):
                     res = evaluate_placement(used_alpha, used_beta)
                     coarse_results.append(res)
-                    # print(f"  alpha={used_alpha:<3.0f} beta={used_beta:<3.0f} | "
-                    #       f"hpwl={res['hpwl_final']:<10.2f} overlap={res['overlap_percent']:<6.3f} "
-                    #       f"in_range={res['in_allowed_range']}")
             
             # Find best alpha and beta from coarse sweep
             in_range_candidates = [r for r in coarse_results if r['in_allowed_range']]
@@ -188,16 +181,11 @@ for instance in instances:
             
             a1 = best['alpha']
             b1 = best['beta']
-            print(f"Best from coarse: a1={a1}, b1={b1}, hpwl={best['hpwl_final']:.2f}")
         else:
             # 1D sweep for CENTER placement (only alpha)
-            print(f"1D Coarse sweep: alpha=[{coarse_start}..{coarse_end}]")
-            
             for used_alpha in range(coarse_start, coarse_end, coarse_step):
                 res = evaluate_placement(used_alpha, 0)
                 coarse_results.append(res)
-                # print(f"  alpha={used_alpha:<3.0f} | hpwl={res['hpwl_final']:<10.2f} "
-                #       f"overlap={res['overlap_percent']:<6.3f} in_range={res['in_allowed_range']}")
             
             # Find best alpha from coarse sweep
             in_range_candidates = [r for r in coarse_results if r['in_allowed_range']]
@@ -208,16 +196,13 @@ for instance in instances:
             
             a1 = best['alpha']
             b1 = 0.0
-            print(f"Best from coarse: a1={a1}, hpwl={best['hpwl_final']:.2f}")
         
         # Cache coarse result
         coarse_cache[cache_key] = {'a1': a1, 'b1': b1}
         with open(COARSE_CACHE_FILE, 'w') as f:
             json.dump(coarse_cache, f, indent=2)
-        print(f"Saved coarse results to {COARSE_CACHE_FILE}")
 
     # ==================== FINE SWEEP ====================
-    print(f"\nRunning fine sweep around a1={a1}, b1={b1}...")
     fine_results = []
     seen_alphas = set(r['alpha'] for r in coarse_results)
     seen_betas = set(r['beta'] for r in coarse_results)
@@ -262,13 +247,29 @@ for instance in instances:
                 fine_results.append(res)
 
     # ==================== RANK AND COLLECT TOP-K ====================
-    fine_results_sorted = sorted(fine_results, key=lambda r: (0 if r['in_allowed_range'] else 1, r['hpwl_final'], r['overlap']))
+    all_results = coarse_results + fine_results
+    unique_results = []
+    seen = set()
+    for r in all_results:
+        key = (r['alpha'], r['beta'])
+        if key not in seen:
+            seen.add(key)
+            unique_results.append(r)
+            
+    fine_results_sorted = sorted(unique_results, key=lambda r: (0 if r['in_allowed_range'] else 1, r['hpwl_final'], r['overlap']))
     top_results = fine_results_sorted[:top_k]
+    
+    best = top_results[0]
+    total_time = time.time() - start_time
+    
+    # User specifically asked for 5% threshold in prompt
+    is_in_range_5pct = best['overlap_percent'] <= 0.05
+    in_range_str = "Yes" if is_in_range_5pct else "No"
+    
+    best_beta_str = f"{best['beta']:.1f}" if place_type == PlaceType.IO else "N/A"
+    print(f"{instance:<15} | {best['hpwl_final']:<10.2f} | {best['overlap_percent']:<10.4f} | {in_range_str:<10} | {best['alpha']:<10.1f} | {best_beta_str:<10} | {total_time:<10.2f}")
 
-    print(f"\nTop {top_k} results:")
     for idx, r in enumerate(top_results, start=1):
-        print(f"Top{idx}: alpha={r['alpha']:.1f} beta={r['beta']:.1f} hpwl={r['hpwl_final']:.2f} overlap={r['overlap_percent']:.3f}")
-        
         # Append to CSV
         beta_val = r['beta'] if place_type == PlaceType.IO else 0.0
         row = extract_features_from_placer(

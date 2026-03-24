@@ -1,14 +1,8 @@
 
 set benchmarks {
-    mkDelayWorker32B /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/mkDelayWorker32B.v
-    mkPktMerge /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/mkPktMerge.v
-    mkSMAdapter4B /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/mkSMAdapter4B.v
-    or1200_flat /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/or1200.v
-    paj_raygentop_hierarchy_no_mem /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/raygentop.v
-    sv_chip0_hierarchy_no_mem /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/stereovision0.v
-    sv_chip1_hierarchy_no_mem /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/stereovision1.v
-    sv_chip2_hierarchy_no_mem /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/stereovision2.v
-    sv_chip3_hierarchy_no_mem /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/stereovision3.v
+    bgm /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/bgm.v
+    RLE_BlobMerging /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/blob_merge.v
+    sha1 /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/sha.v
 }
 
 # bgm /home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/bgm.v
@@ -65,7 +59,14 @@ foreach {top_module rtl_file} $benchmarks {
     
     # Placement
     puts "Running placement for $top_module..."
+    set place_start [clock seconds]
     place_design
+    set place_end [clock seconds]
+    set place_time [expr {$place_end - $place_start}]
+
+    set fp [open [file join $output_dir "place_time.txt"] w]
+    puts $fp $place_time
+    close $fp
     
     # Routing
     puts "Running routing for $top_module..."

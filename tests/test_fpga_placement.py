@@ -20,11 +20,35 @@ from fem_placer.logger import *
 from fem_placer.config import *
 from ml.dataset import *
 from ml.predict import predict_alpha
+import glob
+import re
+import os
+
+def get_vivado_place_times(logs_dir='./vivado/output_dir'):
+    vivado_times = {}
+    
+    if not os.path.exists(logs_dir):
+        return vivado_times
+        
+    for instance_dir in os.listdir(logs_dir):
+        place_time_file = os.path.join(logs_dir, instance_dir, 'place_time.txt')
+        if os.path.isfile(place_time_file):
+            try:
+                with open(place_time_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        vivado_times[instance_dir] = int(float(content))
+            except Exception as e:
+                print(f"Error reading {place_time_file}: {e}")
+                
+    return vivado_times
+
+vivado_place_times = get_vivado_place_times()
 
 SET_LEVEL('WARNING')
 
 instances = ['c2670', 'c5315', 'c6288', 'c7552',
-             's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+             's1488', 's5378', 's9234', 's15850', 'bgm', 'sha1', 'RLE_BlobMerging', 'FPGA-example1']
 
 # instances = ['bgm', 'blob_merge', 'boundtop', 'ch_intrinsics', 'diffeq', 'diffeq2', 'LU8PEEng', 
 #             'LU32PEEng', 'mcml', 'mkDelayWorker32B', 'mkPktMerge', 'mkSMAdapter4B', 'or1200', 
@@ -48,7 +72,7 @@ anneal='lin'
 io_factor = 400.0
 
 print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Net/Total':<14} {'Overlap':<8} "
-      f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12} {'Time(s)':<10}")
+      f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12} {'Time(s)':<10} {'VivadoTime(s)':<14}")
 
 for instance in instances:
     place_type = PlaceType.CENTERED
@@ -126,14 +150,16 @@ for instance in instances:
         placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids, real_io_coords, io_ids, include_io = True)
         all_coords = torch.cat([placement_legalized[0], placement_legalized[1]], dim=0)
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, all_coords)
+        vivado_time_str = str(vivado_place_times.get(instance, 'N/A'))
         print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
-            f"{fem_hpwl_initial['hpwl']:<18.2f} {fem_hpwl_final['hpwl']:<16.2f} {vivado_hpwl['hpwl']:<12.2f} {optimize_time:<10.2f}")
+            f"{fem_hpwl_initial['hpwl']:<18.2f} {fem_hpwl_final['hpwl']:<16.2f} {vivado_hpwl['hpwl']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
     else:
         real_logic_coords = config[optimal_inds[0]]
         placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids)
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, (placement_legalized[0]))
+        vivado_time_str = str(vivado_place_times.get(instance, 'N/A'))
         print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
-            f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl['hpwl_no_io']:<12.2f} {optimize_time:<10.2f}")
+            f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl['hpwl_no_io']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
     
     if draw_loss_function:
         global_drawer.plot_fpga_placement_loss(f'result/{instance}/hpwl_loss.png')
