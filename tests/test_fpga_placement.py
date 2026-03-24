@@ -9,6 +9,9 @@ sys.path.insert(0, '.')
 
 import time
 import torch
+import warnings
+warnings.filterwarnings("ignore", message="Trying to unpickle estimator.*")
+
 from fem_placer import (
     FpgaPlacer,
     PlacementDrawer,
@@ -23,8 +26,8 @@ from ml.predict import predict_alpha
 
 SET_LEVEL('WARNING')
 
-instances = ['c2670', 'c5315', 'c6288', 'c7552',
-             's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
+# instances = ['c2670', 'c5315', 'c6288', 'c7552',
+#              's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
 
 # instances = ['bgm', 'blob_merge', 'boundtop', 'ch_intrinsics', 'diffeq', 'diffeq2', 'LU8PEEng', 
 #             'LU32PEEng', 'mcml', 'mkDelayWorker32B', 'mkPktMerge', 'mkSMAdapter4B', 'or1200', 
@@ -32,6 +35,8 @@ instances = ['c2670', 'c5315', 'c6288', 'c7552',
 
 # instances = ['c2670_boundary', 'c5315_boundary', 'c6288_boundary', 'c7552_boundary',
 #              's1488_boundary', 's5378_boundary', 's9234_boundary', 's15850_boundary', 'FPGA-example1_boundary']
+
+instances = ['c2670_boundary']
 
 # instances = ['bgm_boundary', 'sha1_boundary', 'RLE_BlobMerging_boundary']
 
@@ -51,11 +56,11 @@ print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Net/Tot
       f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12} {'Time(s)':<10}")
 
 for instance in instances:
-    place_type = PlaceType.CENTERED
+    place_type = PlaceType.IO
     debug = True
     fpga_placer = FpgaPlacer(place_orientation = place_type, 
                             grid_type = GridType.SQUARE,
-                            place_mode = IoMode.NORMAL,
+                            place_mode = IoMode.VIRTUAL_NODE,
                             utilization_factor = 0.4,
                             debug = debug,
                             device = dev)
