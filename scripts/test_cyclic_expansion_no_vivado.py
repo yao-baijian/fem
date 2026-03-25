@@ -12,6 +12,7 @@ from fem_placer import (
     solve_placement_cyclic
 )
 from fem_placer.logger import *
+from scripts.qubo_utils import reconstruct_logic_site_coords
 SET_LEVEL('WARNING')
 
 # Configuration
@@ -43,15 +44,7 @@ for instance in instances:
     num_inst = optimizer.num_inst
     
     # Recreate coordinates strictly to match constraint expectations
-    grid_side = int(n_sites**0.5)
-    logic_site_coords = torch.cartesian_prod(
-        torch.arange(grid_side, dtype=torch.float32),
-        torch.arange(n_sites // grid_side, dtype=torch.float32)
-    )
-
-    if logic_site_coords.shape[0] != n_sites:
-        logic_site_coords = torch.zeros(n_sites, 2)
-        logic_site_coords[:, 0] = torch.arange(n_sites)
+    logic_site_coords = reconstruct_logic_site_coords(n_sites)
 
     # Essentially, Cyclic Expansion maximum sub QUBO dim is len(cycles) <= k / 2 + k_u
     # Typically k=60, k_u=30 -> s <= 60

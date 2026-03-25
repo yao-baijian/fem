@@ -99,7 +99,7 @@ class Legalizer:
         remaining = [(pos, count) for pos, count in position_count.items() if count > 1]
 
         if remaining:
-            WARNING(f" remain overlapped opsition: {remaining}")
+            INFO(f" remain overlapped position: {remaining}")
 
         return len(remaining)
 

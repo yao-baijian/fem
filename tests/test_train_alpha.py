@@ -15,6 +15,7 @@ from fem_placer import (
 from fem_placer.logger import *
 from fem_placer.config import *
 from ml.dataset import *
+from placement_eval_logic import run_logic_placement
 
 SET_LEVEL('WARNING')
 
@@ -28,13 +29,15 @@ case_type = 'fpga_placement'
 # Configuration
 RESULT_DIR = './result'
 COARSE_CACHE_FILE = os.path.join(RESULT_DIR, 'coarse_results.json')
-USE_COARSE_CACHE = True  # Set to True to skip coarse sweep and use cached results
+USE_COARSE_CACHE = False  # Set to True to skip coarse sweep and use cached results
 
 instances = ['c1355', 'c2670', 'c5315', 'c6288', 'c7552',
              's1238', 's1488', 's5378', 's9234', 's15850', 'FPGA-example1']
 
 # instances = ['FPGA-example1']
 # instances = ['c5315']
+
+# instances = ['c6288', s]
 
 # Load coarse cache if available
 coarse_cache = {}
@@ -80,54 +83,25 @@ for instance in instances:
     overlap_allowed_max = 0.08
 
     def evaluate_placement(alpha, beta=0):
-        """Evaluate placement for given alpha (and optionally beta for IO placement)."""
-        # Clear grid state before each run
-        fpga_placer.grids['logic'].clear_all()
-        if place_type == PlaceType.IO:
-            fpga_placer.grids['io'].clear_all()
+        """Evaluate placement for given alpha (and optionally beta for IO placement).
 
-        fpga_placer.set_alpha(alpha)
-        if place_type == PlaceType.IO:
-            fpga_placer.set_beta(beta)
-
-        optimizer = FPGAPlacementOptimizer(
-            num_inst=fpga_placer.instances['logic'].num,
-            num_fixed_inst=fpga_placer.instances['io'].num,
-            num_site=fpga_placer.get_grid('logic').area,
-            num_fixed_site=fpga_placer.get_grid('io').area,
-            coupling_matrix=fpga_placer.net_manager.insts_matrix,
-            site_coords_matrix=fpga_placer.logic_site_coords,
-            io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
-            io_site_coords=fpga_placer.io_site_coords,
-            constraint_alpha=fpga_placer.constraint_alpha,
-            constraint_beta=fpga_placer.constraint_alpha,  # For IO placements, beta is set separately
+        Uses shared logic from placement_eval_logic.run_logic_placement.
+        """
+        res = run_logic_placement(
+            fpga_placer=fpga_placer,
+            alpha=alpha,
+            beta=beta,
             num_trials=num_trials,
             num_steps=num_steps,
             dev=dev,
-            betamin=0.01,
-            betamax=0.5,
-            anneal='inverse',
-            optimizer='adam',
-            learning_rate=0.1,
-            h_factor=0.01,
-            seed=1,
-            dtype=torch.float32,
-            with_io=(place_type == PlaceType.IO),
-            manual_grad=manual_grad
+            manual_grad=manual_grad,
+            anneal=anneal,
+            place_type=place_type,
         )
 
-        config, result = optimizer.optimize()
-        optimal_inds = torch.argwhere(result == result.min()).reshape(-1)
-        legalizer = Legalizer(placer=fpga_placer, device=dev)
-        logic_ids, io_ids = fpga_placer.get_ids()
-
-        if place_type == PlaceType.IO:
-            real_logic_coords = config[0][optimal_inds[0]]
-            real_io_coords = config[1][optimal_inds[0]]
-            placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids, real_io_coords, io_ids, include_io=True)
-        else:
-            real_logic_coords = config[optimal_inds[0]]
-            placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids)
+        overlap = res['overlap']
+        fem_hpwl_initial = res['fem_hpwl_initial']
+        fem_hpwl_final = res['fem_hpwl_final']
 
         overlap_percent = float(overlap) / float(site_num['logic_inst_num'])
         in_allowed_range = (overlap_percent >= overlap_allowed_min and overlap_percent <= overlap_allowed_max)

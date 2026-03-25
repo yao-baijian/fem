@@ -78,7 +78,7 @@ def extract_features_from_placer(
     
     # Add IO-specific features if applicable
     if with_io:
-        row["fixed_insts_num"] = int(placer.fixed_insts_num)
+        row["fixed_insts_num"] = int(placer.instances['io'].num)
         row["beta"] = float(beta)
     
     return row

@@ -11,6 +11,7 @@ import itertools
 from fem_placer import FPGAPlacementOptimizer, solve_placement_sb
 from fem_placer.logger import *
 from scripts.sbm_optimizer import solve_placement_sb_lazy
+from scripts.qubo_utils import reconstruct_logic_site_coords
 
 SET_LEVEL('WARNING')
 
@@ -49,26 +50,9 @@ def tune_parameters_no_vivado(instance, lam_vals, mu_vals, dev='cpu', agents=16,
     # The actual FpgaPlacementOptimizer contains n_sites, though we don't have explicit grid width/height
     # However, solve_placement_sb accepts site_coords. We reconstruct it or grab it if stored
     # As a fallback, reconstruct 1D coords for SB just for D computation inside SB matching n_sites
-    n_sites = D.shape[0]
-    
-    # If the user saved explicit site coordinates, you'd typically retrieve them.
-    # We will just generate dummy coordinates because the objective largely consumes D directly initially, 
-    # but export_placement_qubo needs site coordinates to compute D. 
-    # As a workaround, we'll create a 1D mapping to feed export_placement_qubo, but ideally export_placement_qubo 
-    # should just take D. Since we must pass coords, let's create a linear sequence that forms the exact distance mapping 
-    # or just bypass it. Oh wait, export_placement_qubo strictly calls get_site_distance_matrix. 
-    # We should reconstruct a pseudo-grid that matches n_sites.
-    # Assuming square grid for the sake of the QUBO solver API if explicit coords are not stored in init_params
-    grid_side = int(n_sites**0.5)
-    logic_site_coords = torch.cartesian_prod(
-        torch.arange(grid_side, dtype=torch.float32),
-        torch.arange(n_sites // grid_side, dtype=torch.float32)
-    )
 
-    # To be safe, try to match size exactly
-    if logic_site_coords.shape[0] != n_sites:
-        logic_site_coords = torch.zeros(n_sites, 2)
-        logic_site_coords[:, 0] = torch.arange(n_sites)
+    n_sites = D.shape[0]
+    logic_site_coords = reconstruct_logic_site_coords(n_sites)
 
     J_max = J.max().item()
     D_max = D.max().item()
