@@ -45,6 +45,12 @@ create_project -in_memory -part $part_name
 read_verilog $verilog_file
 read_verilog $wrapper_file
 
+# Check if this is a VTR benchmark and include primitives if so
+if { [string match "*vtr*" $verilog_file] } {
+    puts "VTR benchmark detected, reading vtr_primitives.v..."
+    read_verilog "/home/byao/Desktop/fem_rev/fem/benchmarks/vtr/verilog/vtr_primitives.v"
+}
+
 # 3. Synthesize
 set wrapper_top "${top_module}_wrapper"
 synth_design -top $wrapper_top -part $part_name -flatten_hierarchy rebuilt

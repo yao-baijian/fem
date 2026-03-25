@@ -420,21 +420,22 @@ class PlacementDrawer:
         """
         colors = {'lin': '#FF6B6B', 'exp': '#4ECDC4', 'inverse': '#45B7D1'}
         
-        fig, ax = plt.subplots(figsize=(5, 5))
+        fig, ax = plt.subplots(figsize=(4, 4))
         
         for anneal_type, loss_data in annealing_results.items():
             if 'total_losses' in loss_data:
                 steps = list(range(len(loss_data['total_losses'])))
                 ax.plot(steps, loss_data['total_losses'],
                         color=colors.get(anneal_type, '#000000'),
-                        linewidth=2.5, label=f'{anneal_type.upper()} Annealing',
-                        marker='o', markersize=3, markevery=max(1, len(steps)//20))
+                        linewidth=2.5, label=f'{anneal_type.upper()} Annealing')
         
         ax.set_xlabel('Step', fontsize=12)
         ax.set_ylabel('Total Loss', fontsize=12)
         # ax.set_title('Total Loss Comparison Across Annealing Schedules', fontsize=14, fontweight='bold')
         ax.legend(fontsize=11, loc='best')
-        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.grid(True, axis='y', alpha=0.3, linestyle='--')
+        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=5))
         
         # Format y-axis with scientific notation (10e format)
         ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))

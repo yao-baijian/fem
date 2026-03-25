@@ -146,6 +146,17 @@ proc place_io_registers {base_clock_region {top_module "default"}} {
     add_cells_to_pblock [get_pblocks pblock_boundary] $io_regs
     set_property EXCLUDE_PLACEMENT 1 [get_pblocks pblock_boundary]
 
+    # Create PBLOCK for core logic to keep it strictly within the allocated clock regions
+    create_pblock pblock_core
+    foreach cr $cr_list {
+        resize_pblock [get_pblocks pblock_core] -add CLOCKREGION_${cr}:CLOCKREGION_${cr}
+    }
+    
+    set core_cells [get_cells -hierarchical -filter {IS_PRIMITIVE == 1 && NAME !~ "*u_io_reg_*" && PRIMITIVE_TYPE !~ "I/O.*" && PRIMITIVE_TYPE !~ "OTHERS.CLOCK.*"}]
+    if {[llength $core_cells] > 0} {
+        add_cells_to_pblock [get_pblocks pblock_core] $core_cells
+    }
+
     # Open output txt file for placed IO mapping
     file mkdir "../result/${top_module}"
     set fp [open "../result/${top_module}/io_locations.txt" w]
