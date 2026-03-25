@@ -13,7 +13,7 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
         module_match = re.search(pattern, content)
         if not module_match:
             print(f"Error: Could not find module definition for {top_module} in {verilog_file}")
-            return
+            sys.exit(1)
         module_body = module_match.group(0)
         module_name = top_module
     else:
@@ -21,7 +21,7 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
         module_match = re.search(r'(?s)module\s+(\w+)\b(.*?)(?:\s*endmodule\b)', content)
         if not module_match:
             print(f"Error: Could not find any module definition in {verilog_file}")
-            return
+            sys.exit(1)
         module_name = module_match.group(1)
         module_body = module_match.group(0)
 
@@ -32,45 +32,87 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
 
     # Normalize whitespace inside the extracted module only
     normalized_content = re.sub(r'\s+', ' ', module_body)
+
+    # Try to extract ANSI-style port list from module header
+    header_ports = None
+    header_match = re.search(r'module\s+' + re.escape(module_name) + r'\s*\((.*?)\)\s*;', module_body, re.DOTALL)
+    if header_match:
+        header_ports = re.sub(r'\s+', ' ', header_match.group(1))
     
     inputs = []
     outputs = []
+    # Map port name -> width string, e.g. "[31:0]" or "[WIDTH-1:0]"; empty string means scalar
+    port_widths = {}
     
-    # Find inputs
+    def _parse_ports_with_width(ports_str, direction):
+        """Parse a declaration like 'input [31:0] a, b, c' or 'output a, b'"""
+        # Common style is one width applied to all ports in this declaration
+        ports_str = ports_str.strip()
+        width = ''
+        m = re.match(r"(\[[^]]+\])\s*(.*)", ports_str)
+        if m:
+            width = m.group(1).strip()
+            rest = m.group(2)
+        else:
+            rest = ports_str
+
+        for raw in rest.split(','):
+            raw = raw.strip()
+            if not raw:
+                continue
+            # Drop any remaining keywords like 'wire', 'reg'
+            tokens = raw.split()
+            name = tokens[-1]
+            if direction == 'input':
+                inputs.append(name)
+            else:
+                outputs.append(name)
+            # Only set width if we don't already have a more specific one
+            if name not in port_widths and width:
+                port_widths[name] = width
+
+    # Always scan body for non-ANSI input/output declarations
     input_matches = re.finditer(r'\binput\s+([^;]+);', normalized_content)
     for match in input_matches:
-        ports_str = match.group(1)
-        # Strip out any vector notation like [BITS-1:0] or [3:0]
-        ports_str = re.sub(r'\[.*?\]', '', ports_str)
-        ports = ports_str.split(',')
-        inputs.extend([p.strip().split()[-1] for p in ports if p.strip()])
+        _parse_ports_with_width(match.group(1), 'input')
 
-    # Find outputs
     output_matches = re.finditer(r'\boutput\s+([^;]+);', normalized_content)
     for match in output_matches:
-        ports_str = match.group(1)
-        ports_str = re.sub(r'\[.*?\]', '', ports_str)
-        ports = ports_str.split(',')
-        outputs.extend([p.strip().split()[-1] for p in ports if p.strip()])
+        _parse_ports_with_width(match.group(1), 'output')
 
-    if not inputs and not outputs:
-        # Some verilog has inputs/outputs in the module declaration
-        # like module s1488(input CK, input CLR, output v0);
-        # Let's check for that
-        ansi_matches = re.finditer(r'\b(input|output)\s+(?:wire\s+|reg\s+)?([^,;\)]+)', normalized_content)
+    # Also handle ANSI-style declarations in the module header, if present
+    if header_ports is not None:
+        ansi_source = header_ports
+    else:
+        ansi_source = None
+
+    if ansi_source is not None:
+        # e.g. module m(input CK, input [7:0] A, output [7:0] Y);
+        ansi_matches = re.finditer(r'\b(input|output)\s+(?:wire\s+|reg\s+)?([^,\)]+)', ansi_source)
         for match in ansi_matches:
             direction = match.group(1)
-            port_name = match.group(2).strip().split()[-1] # in case of "input wire [3:0] A"
+            tail = match.group(2).strip()
+            # tail may be '[31:0] A' or just 'A'
+            m = re.match(r'(\[[^]]+\])\s*(\w+)', tail)
+            if m:
+                width = m.group(1).strip()
+                port_name = m.group(2)
+            else:
+                width = ''
+                port_name = tail.split()[-1]
+
             if direction == "input":
                 inputs.append(port_name)
             else:
                 outputs.append(port_name)
+            if width and port_name not in port_widths:
+                port_widths[port_name] = width
                 
     if not inputs and not outputs:
         print("Error: No inputs or outputs found.")
-        return
+        sys.exit(1)
 
-    # Deduplicate
+    # Deduplicate while preserving order
     inputs = list(dict.fromkeys(inputs))
     outputs = list(dict.fromkeys(outputs))
 
@@ -98,7 +140,9 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
             if port in clock_ports:
                 continue
             direction = "input" if port in inputs else "output"
-            port_decls.append(f"    {direction} {port}")
+            width = port_widths.get(port, '')
+            width_str = (width + ' ') if width else ''
+            port_decls.append(f"    {direction} {width_str}{port}")
             
         f.write(",\n".join(port_decls))
         f.write("\n);\n\n")
@@ -106,37 +150,91 @@ def generate_wrapper(verilog_file, output_file, top_module=None, clock_region="X
         # Internal wires for connection to the original module
         f.write("    // Internal wires connecting wrapper registers to core logic\n")
         for port in data_inputs:
-            f.write(f"    wire {port}_int;\n")
+            width = port_widths.get(port, '')
+            width_str = (width + ' ') if width else ''
+            f.write(f"    wire {width_str}{port}_int;\n")
         for port in outputs:
-            f.write(f"    wire {port}_int;\n")
+            width = port_widths.get(port, '')
+            width_str = (width + ' ') if width else ''
+            f.write(f"    wire {width_str}{port}_int;\n")
         f.write("\n")
 
         # Instantiate Input Registers
         f.write("    // Input Registers\n")
         for port in data_inputs:
-            # FDRE instance for input
-            # D = port (external input), Q = internal wire to core, C = clk, CE=1, R=0
-            f.write(f"    FDRE #(.INIT(1'b0)) u_io_reg_in_{port} (\n")
-            f.write(f"        .C(clk),\n")
-            f.write(f"        .CE(1'b1),\n")
-            f.write(f"        .D({port}),\n")
-            f.write(f"        .Q({port}_int),\n")
-            f.write(f"        .R(1'b0)\n")
-            f.write(f"    );\n")
+            width = port_widths.get(port, '')
+            if width:
+                # Vector input: generate per-bit FDREs
+                m = re.match(r'\[(.+):(.+)\]', width)
+                if m:
+                    msb = m.group(1).strip()
+                    lsb = m.group(2).strip()
+                else:
+                    # Fallback: treat as [WIDTH-1:0]
+                    msb = width.strip('[]')
+                    lsb = '0'
+                width_expr = f"(({msb}) - ({lsb}) + 1)"
+                idx_name = f"i_{port}"
+                f.write(f"    genvar {idx_name};\n")
+                f.write("    generate\n")
+                f.write(f"        for ({idx_name} = 0; {idx_name} < {width_expr}; {idx_name} = {idx_name} + 1) begin : gen_in_{port}\n")
+                index_expr = f"{idx_name}" if lsb == '0' else f"{idx_name} + ({lsb})"
+                f.write(f"            FDRE #(.INIT(1'b0)) u_io_reg_in_{port}_bit (\n")
+                f.write(f"                .C(clk),\n")
+                f.write(f"                .CE(1'b1),\n")
+                f.write(f"                .D({port}[{index_expr}]),\n")
+                f.write(f"                .Q({port}_int[{index_expr}]),\n")
+                f.write(f"                .R(1'b0)\n")
+                f.write(f"            );\n")
+                f.write("        end\n")
+                f.write("    endgenerate\n")
+            else:
+                # Scalar input: single FDRE
+                f.write(f"    FDRE #(.INIT(1'b0)) u_io_reg_in_{port} (\n")
+                f.write(f"        .C(clk),\n")
+                f.write(f"        .CE(1'b1),\n")
+                f.write(f"        .D({port}),\n")
+                f.write(f"        .Q({port}_int),\n")
+                f.write(f"        .R(1'b0)\n")
+                f.write(f"    );\n")
         f.write("\n")
 
         # Instantiate Output Registers
         f.write("    // Output Registers\n")
         for port in outputs:
-            # FDRE instance for output
-            # D = internal wire from core, Q = port (external output), C = clk, CE=1, R=0
-            f.write(f"    FDRE #(.INIT(1'b0)) u_io_reg_out_{port} (\n")
-            f.write(f"        .C(clk),\n")
-            f.write(f"        .CE(1'b1),\n")
-            f.write(f"        .D({port}_int),\n")
-            f.write(f"        .Q({port}),\n")
-            f.write(f"        .R(1'b0)\n")
-            f.write(f"    );\n")
+            width = port_widths.get(port, '')
+            if width:
+                m = re.match(r'\[(.+):(.+)\]', width)
+                if m:
+                    msb = m.group(1).strip()
+                    lsb = m.group(2).strip()
+                else:
+                    msb = width.strip('[]')
+                    lsb = '0'
+                width_expr = f"(({msb}) - ({lsb}) + 1)"
+                idx_name = f"j_{port}"
+                f.write(f"    genvar {idx_name};\n")
+                f.write("    generate\n")
+                f.write(f"        for ({idx_name} = 0; {idx_name} < {width_expr}; {idx_name} = {idx_name} + 1) begin : gen_out_{port}\n")
+                index_expr = f"{idx_name}" if lsb == '0' else f"{idx_name} + ({lsb})"
+                f.write(f"            FDRE #(.INIT(1'b0)) u_io_reg_out_{port}_bit (\n")
+                f.write(f"                .C(clk),\n")
+                f.write(f"                .CE(1'b1),\n")
+                f.write(f"                .D({port}_int[{index_expr}]),\n")
+                f.write(f"                .Q({port}[{index_expr}]),\n")
+                f.write(f"                .R(1'b0)\n")
+                f.write(f"            );\n")
+                f.write("        end\n")
+                f.write("    endgenerate\n")
+            else:
+                # Scalar output
+                f.write(f"    FDRE #(.INIT(1'b0)) u_io_reg_out_{port} (\n")
+                f.write(f"        .C(clk),\n")
+                f.write(f"        .CE(1'b1),\n")
+                f.write(f"        .D({port}_int),\n")
+                f.write(f"        .Q({port}),\n")
+                f.write(f"        .R(1'b0)\n")
+                f.write(f"    );\n")
         f.write("\n")
 
         # Instantiate Original Module
