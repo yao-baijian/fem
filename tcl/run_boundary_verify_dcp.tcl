@@ -16,7 +16,7 @@ if { $argc > 2 } {
 if { $argc > 3 } {
     set part_name [lindex $argv 3]
 } else {
-    set part_name "xcvu095-ffva2104-2-e"
+    set part_name "xcvu065-ffvc1517-1-i"
 }
 
 set output_dir "output_dir/${top_module}_boundary"

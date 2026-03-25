@@ -29,6 +29,8 @@ dev = 'cpu'
 manual_grad = False
 anneal='lin'
 
+connectivity_results = []
+
 for instance in instances:
     place_type = PlaceType.IO
     debug = False
@@ -42,7 +44,31 @@ for instance in instances:
     fpga_placer.set_instance_name(instance)
     
     vivado_hpwl, inst_num, net_num = fpga_placer.init_placement(f'./vivado/output_dir/{instance}/post_impl.dcp', f'./vivado/output_dir/{instance}/optimized_placement.pl')
+    
+    # Calculate connectivity
+    net_sizes = [len(sites) for sites in fpga_placer.net_manager.net_to_sites.values()]
+    if net_sizes:
+        min_conn = min(net_sizes)
+        max_conn = max(net_sizes)
+        avg_conn = sum(net_sizes) / len(net_sizes)
+    else:
+        min_conn = max_conn = avg_conn = 0
+        
+    connectivity_results.append({
+        'Instance': instance,
+        'Min': min_conn,
+        'Max': max_conn,
+        'Avg': avg_conn
+    })
+    
     fpga_placer.set_alpha(30)
     fpga_placer.set_beta(30)
     fpga_placer.save_init_params(instance_name=instance)
+
+print("\n" + "="*65)
+print(f"{'Instance':<25} | {'Min Conn':<10} | {'Max Conn':<10} | {'Avg Conn':<10}")
+print("-" * 65)
+for res in connectivity_results:
+    print(f"{res['Instance']:<25} | {res['Min']:<10} | {res['Max']:<10} | {res['Avg']:<10.2f}")
+print("="*65 + "\n")
 

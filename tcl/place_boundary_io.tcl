@@ -18,12 +18,51 @@ proc place_io_registers {base_clock_region {top_module "default"}} {
     set num_logic [llength $logic_cells]
     set required_sites [expr {($num_logic + 7) / 8}]
     
+    # Start from the base clock region and, when possible, include
+    # one additional clock region vertically so the boundary spans
+    # at least two clock regions in height (e.g. ~120 slice rows).
     regexp {X(\d+)Y(\d+)} $base_clock_region match cr_x cr_y
-    set current_cr_y $cr_y
-    set cr_list [list $base_clock_region]
-    
-    set sites [get_sites -of_objects [get_clock_regions $base_clock_region] -filter {SITE_TYPE =~ "SLICE*"}]
-    
+    set cr_list {}
+    lappend cr_list $base_clock_region
+
+    # Prefer the region just above (higher Y). If that doesn't exist,
+    # fall back to the region just below.
+    set added_cr 0
+    set next_y [expr {$cr_y + 1}]
+    set next_cr "X${cr_x}Y${next_y}"
+    set cr_obj [get_clock_regions -quiet $next_cr]
+    if {[llength $cr_obj] == 0} {
+        set prev_y [expr {$cr_y - 1}]
+        set prev_cr "X${cr_x}Y${prev_y}"
+        set cr_obj_prev [get_clock_regions -quiet $prev_cr]
+        if {[llength $cr_obj_prev] != 0} {
+            lappend cr_list $prev_cr
+            set added_cr 1
+        }
+    } else {
+        lappend cr_list $next_cr
+        set added_cr 1
+    }
+
+    if {!$added_cr} {
+        puts "Warning: Could not find adjacent clock region for $base_clock_region; using single region."
+    }
+
+    # Gather slice sites for the current list of clock regions
+    set sites [get_sites -of_objects [get_clock_regions $cr_list] -filter {SITE_TYPE =~ "SLICE*"}]
+
+    # If logic still does not fit, keep expanding further in Y
+    # direction starting from the maximum Y used so far.
+    set max_cr_y $cr_y
+    foreach cr $cr_list {
+        if {[regexp {X(\d+)Y(\d+)} $cr -> _x _y]} {
+            if {$_y > $max_cr_y} {
+                set max_cr_y $_y
+            }
+        }
+    }
+    set current_cr_y $max_cr_y
+
     while {[llength $sites] < $required_sites} {
         incr current_cr_y
         set next_cr "X${cr_x}Y${current_cr_y}"
@@ -145,6 +184,17 @@ proc place_io_registers {base_clock_region {top_module "default"}} {
     resize_pblock [get_pblocks pblock_boundary] -add $boundary_sites
     add_cells_to_pblock [get_pblocks pblock_boundary] $io_regs
     set_property EXCLUDE_PLACEMENT 1 [get_pblocks pblock_boundary]
+
+    # Create PBLOCK for core logic to keep it strictly within the allocated clock regions
+    create_pblock pblock_core
+    foreach cr $cr_list {
+        resize_pblock [get_pblocks pblock_core] -add CLOCKREGION_${cr}:CLOCKREGION_${cr}
+    }
+    
+    set core_cells [get_cells -hierarchical -filter {IS_PRIMITIVE == 1 && NAME !~ "*u_io_reg_*" && PRIMITIVE_TYPE !~ "I/O.*" && PRIMITIVE_TYPE !~ "OTHERS.CLOCK.*"}]
+    if {[llength $core_cells] > 0} {
+        add_cells_to_pblock [get_pblocks pblock_core] $core_cells
+    }
 
     # Open output txt file for placed IO mapping
     file mkdir "../result/${top_module}"

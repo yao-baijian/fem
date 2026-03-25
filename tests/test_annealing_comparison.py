@@ -58,14 +58,14 @@ def run_optimization_with_anneal(fpga_placer, instance, anneal_type, num_trials,
     clear_history()
     
     optimizer = FPGAPlacementOptimizer(
-        num_inst=fpga_placer.opti_insts_num,
-        num_fixed_inst=fpga_placer.fixed_insts_num,
+        num_inst=fpga_placer.instances['logic'].num,
+        num_fixed_inst=fpga_placer.instances['io'].num,
         num_site=fpga_placer.get_grid('logic').area,
+        num_fixed_site=fpga_placer.get_grid('io').area,
         coupling_matrix=fpga_placer.net_manager.insts_matrix,
         site_coords_matrix=fpga_placer.logic_site_coords,
         io_site_connect_matrix=fpga_placer.net_manager.io_insts_matrix,
         io_site_coords=fpga_placer.io_site_coords,
-        bbox_length=fpga_placer.grids['logic'].area_length,
         constraint_alpha=fpga_placer.constraint_alpha,
         constraint_beta=fpga_placer.constraint_alpha,
         num_trials=num_trials,
@@ -94,15 +94,16 @@ def main():
     debug = False
     
     INFO(f'Initializing FPGA placer for instance {INSTANCE}...')
-    fpga_placer = FpgaPlacer(
-        place_type,
-        GridType.SQUARE,
-        0.4,
-        debug,
-        device=DEVICE
-    )
+    fpga_placer = FpgaPlacer(place_orientation = place_type,
+                            grid_type=GridType.SQUARE,
+                            place_mode = IoMode.NORMAL,
+                            utilization_factor = 0.4,
+                            debug = debug,
+                            device=DEVICE)
     
-    vivado_hpwl, site_num, site_net_num, total_net_num = fpga_placer.init_placement(
+    fpga_placer.set_instance_name(INSTANCE)
+    
+    vivado_hpwl, inst_num, _ = fpga_placer.init_placement(
         f'./vivado/output_dir/{INSTANCE}/post_impl.dcp',
         f'./vivado/output_dir/{INSTANCE}/optimized_placement.pl'
     )
@@ -188,9 +189,7 @@ def main():
     router = Router(placer=fpga_placer)
     logic_ids, io_ids = fpga_placer.get_ids()
     
-    real_logic_coords = fpga_placer.get_grid('logic').to_real_coords_tensor(
-        best_metrics['config'][optimal_inds[0]]
-    )
+    real_logic_coords = best_metrics['config'][optimal_inds[0]]
     
     placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(
         real_logic_coords,
@@ -203,9 +202,6 @@ def main():
     )
     
     INFO(f'\nFinal Results with Best Annealing ({best_anneal.upper()}):')
-    print(f"{'Benchmark':<12} {INSTANCE:<10} {site_num:<6} {f'{site_net_num}/{total_net_num}':<14} "
-          f"{overlap:<8} {fem_hpwl_initial['hpwl_no_io']:<18.2f} "
-          f"{fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl:<12.2f}")
 
 
 if __name__ == '__main__':
