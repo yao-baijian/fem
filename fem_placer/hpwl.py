@@ -1,6 +1,14 @@
 import torch
+from typing import Iterable, Sequence, Tuple
+
 from .config import *
 from .logger import ERROR, WARNING
+
+try:
+    from .native_hpwl import HAS_NATIVE_HPWL, hpwl_stats as native_hpwl_stats
+except Exception:  # pragma: no cover
+    HAS_NATIVE_HPWL = False
+    native_hpwl_stats = None
 
 class HPWLCalculator:
 
@@ -117,20 +125,41 @@ class HPWLCalculator:
 
         return self._compute_hpwl_from_coordinates(coordinates)
 
+    def _normalize_coordinates(self, coordinates) -> Sequence[Tuple[float, float]]:
+        normalized = []
+        for coord in coordinates:
+            if isinstance(coord, torch.Tensor):
+                x = float(coord[0].item())
+                y = float(coord[1].item())
+            elif isinstance(coord, (list, tuple)) and len(coord) >= 2:
+                x = float(coord[0])
+                y = float(coord[1])
+            else:
+                raise ValueError(f"Unsupported coordinate format: {coord}")
+            normalized.append((x, y))
+        return normalized
+
     def _compute_hpwl_from_coordinates(self, coordinates):
-        x_coords = [coord[0] for coord in coordinates]
-        y_coords = [coord[1] for coord in coordinates]
+        if len(coordinates) < 2:
+            return 0.0, {}
 
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
+        coords = self._normalize_coordinates(coordinates)
 
-        hpwl = (max_x - min_x) + (max_y - min_y)
+        if HAS_NATIVE_HPWL and native_hpwl_stats is not None:
+            hpwl, min_x, max_x, min_y, max_y = native_hpwl_stats(coords)
+        else:
+            x_coords = [pt[0] for pt in coords]
+            y_coords = [pt[1] for pt in coords]
+            min_x, max_x = min(x_coords), max(x_coords)
+            min_y, max_y = min(y_coords), max(y_coords)
+            hpwl = (max_x - min_x) + (max_y - min_y)
+
         bbox = {
             'min_x': min_x, 'max_x': max_x,
             'min_y': min_y, 'max_y': max_y,
             'width': max_x - min_x,
             'height': max_y - min_y,
-            'num_pins': len(coordinates)
+            'num_pins': len(coords)
         }
 
         return hpwl, bbox

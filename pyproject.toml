@@ -31,6 +31,10 @@ ml = ["scikit-learn>=1.3.0", "joblib>=1.3.0"]
 where = ["."]
 include = ["fem_placer*"]
 
+[[tool.setuptools.ext-modules]]
+name = "fem_placer.native_hpwl._hpwl"
+sources = ["fem_placer/native_hpwl/_hpwl.c"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",

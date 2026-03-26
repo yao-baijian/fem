@@ -3,7 +3,8 @@ import os
 import torch
 import rapidwright
 import numpy as np
-from typing import Dict, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Set, Tuple, List, Optional
 from com.xilinx.rapidwright.design import Design, Net
 from .hpwl import HPWLCalculator
 from .config import *
@@ -16,7 +17,11 @@ class NetManager:
                  get_site_inst_name_by_id_func=None,
                  map_coords_to_instance_func=None,
                  debug=False,
-                 device = 'cpu'):
+                 device='cpu',
+                 record_mode='simple',
+                 map_mode='avg',
+                 hpwl_workers=None,
+                 hpwl_parallel_threshold=4):
 
         self.debug = debug
         self.device = device
@@ -39,6 +44,13 @@ class NetManager:
 
         self.debug_src_root = "result"
         self.hpwl_calculator = HPWLCalculator(device, debug=debug)
+        self.record_mode = record_mode
+        self.map_mode = map_mode
+        cpu_count = os.cpu_count() or 4
+        default_workers = max(1, cpu_count // 2)
+        self.hpwl_workers = hpwl_workers if hpwl_workers is not None else default_workers
+        self.hpwl_parallel_threshold = max(1, hpwl_parallel_threshold)
+        self._hpwl_executor: Optional[ThreadPoolExecutor] = None
 
     def has_net(self, site_name):
         return site_name in self.site_to_nets
@@ -287,6 +299,23 @@ class NetManager:
         logic_sites_list = list(logic_sites)
         io_sites_list = list(io_sites)
 
+        weight = 1
+        offset_coeff = 1
+
+        if self.record_mode == 'simple':
+            io_increment = 1.0
+            logic_increment = 1.0
+        elif self.record_mode == 'inverse':
+            denom_io = float(len(logic_sites_list) + len(io_sites_list) + offset_coeff)
+            denom_logic = float(len(logic_sites_list) + offset_coeff)
+            io_increment = weight / denom_io if denom_io > 0 else 0.0
+            logic_increment = weight / denom_logic if denom_logic > 0 else 0.0
+        elif self.record_mode == 'inverse_sqr':
+            denom_io = float(len(logic_sites_list) + len(io_sites_list) + offset_coeff) ** 2
+            denom_logic = float(len(logic_sites_list) + offset_coeff) ** 2
+            io_increment = weight / denom_io if denom_io > 0 else 0.0
+            logic_increment = weight / denom_logic if denom_logic > 0 else 0.0
+
         # 1. IO to logic
         for i in range(len(io_sites_list)):
             for j in range(len(logic_sites_list)):
@@ -296,17 +325,16 @@ class NetManager:
                     self.io_to_site_connectivity[io_inst1] = {}
                 if inst2 not in self.io_to_site_connectivity[io_inst1]:
                     self.io_to_site_connectivity[io_inst1][inst2] = 0
-                self.io_to_site_connectivity[io_inst1][inst2] += 1
+                self.io_to_site_connectivity[io_inst1][inst2] += io_increment
 
                 if inst2 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[inst2] = {}
                 if io_inst1 not in self.io_to_site_connectivity[inst2]:
                     self.io_to_site_connectivity[inst2][io_inst1] = 0
-                self.io_to_site_connectivity[inst2][io_inst1] += 1
+                self.io_to_site_connectivity[inst2][io_inst1] += io_increment
+
 
         # 2. Logic to logic
-        # weight = (len(logic_sites_list) - 1) ** 2
-
         for i in range(len(logic_sites_list)):
             for j in range(i + 1, len(logic_sites_list)):
                 inst1, inst2 = logic_sites_list[i], logic_sites_list[j]
@@ -315,13 +343,13 @@ class NetManager:
                     self.site_to_site_connectivity[inst1] = {}
                 if inst2 not in self.site_to_site_connectivity[inst1]:
                     self.site_to_site_connectivity[inst1][inst2] = 0
-                self.site_to_site_connectivity[inst1][inst2] += 1
+                self.site_to_site_connectivity[inst1][inst2] += logic_increment
 
                 if inst2 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst2] = {}
                 if inst1 not in self.site_to_site_connectivity[inst2]:
                     self.site_to_site_connectivity[inst2][inst1] = 0
-                self.site_to_site_connectivity[inst2][inst1] += 1
+                self.site_to_site_connectivity[inst2][inst1] += logic_increment
 
     def _create_net_tensor(self, valid_net_num, sites_net_list, logic_insts_num):
         self.net_tensor = torch.zeros(valid_net_num, logic_insts_num, dtype=torch.bool)
@@ -352,6 +380,15 @@ class NetManager:
             else:
                 ERROR(f'Cannot find site source id {source_site}')
 
+        if self.map_mode == 'simple':
+            max_val = torch.max(self.insts_matrix)
+            if max_val.item() > 0:
+                self.insts_matrix = self.insts_matrix / max_val
+        elif self.map_mode == 'avg':
+            denom = float(self.insts_matrix.shape[1]) ** 0.5
+            if denom > 0:
+                self.insts_matrix = self.insts_matrix / denom
+
         self.io_insts_matrix_all = torch.zeros((n + k, n + k), device=self.device)
 
         for source_site, connections in self.io_to_site_connectivity.items():
@@ -369,7 +406,36 @@ class NetManager:
 
         self.io_insts_matrix =  self.io_insts_matrix_all[0:n, n:n+k]
 
-        INFO(f'Site matrix {n} x {n}, io site matrix {n + k} x {n + k}')
+        if self.map_mode == 'simple':
+            max_val_io = torch.max(self.io_insts_matrix)
+            if max_val_io.item() > 0:
+                self.io_insts_matrix = self.io_insts_matrix / max_val_io
+        elif self.map_mode == 'avg':
+            denom = float(self.io_insts_matrix.shape[1]) ** 0.5
+            if denom > 0:
+                self.io_insts_matrix = self.io_insts_matrix / denom
+
+        def _matrix_stats(tensor):
+            if tensor is None or tensor.numel() == 0:
+                return 0.0, 0.0, 0.0, 0.0
+            non_zero = tensor[tensor != 0]
+            if non_zero.numel() == 0:
+                return 0.0, 0.0, 0.0, 0.0
+            return (
+                non_zero.min().item(),
+                non_zero.mean().item(),
+                non_zero.max().item(),
+                non_zero.var(unbiased=False).item() if non_zero.numel() > 1 else 0.0,
+            )
+
+        inst_min, inst_mean, inst_max, inst_var = _matrix_stats(self.insts_matrix)
+        io_slice_min, io_slice_mean, io_slice_max, io_slice_var = _matrix_stats(self.io_insts_matrix)
+
+        INFO(f"Site matrix {n} x {n} | min={inst_min:.4f}, mean={inst_mean:.4f}, var={inst_var:.4f}, max={inst_max:.4f}")
+        INFO(f"IO slice matrix {n} x {k} | min={io_slice_min:.4f}, mean={io_slice_mean:.4f}, var={io_slice_var:.4f}, max={io_slice_max:.4f}")
+
+        # print(f"Site matrix {n} x {n} | min={inst_min:.4f}, mean={inst_mean:.4f}, var={inst_var:.4f}, max={inst_max:.4f}")
+        # print(f"IO slice matrix {n} x {k} | min={io_slice_min:.4f}, mean={io_slice_mean:.4f}, var={io_slice_var:.4f}, max={io_slice_max:.4f}")
 
     def save_matrix_debug_info(self, n, k):
         original_options = np.get_printoptions()
@@ -471,20 +537,152 @@ class NetManager:
                 f.write(f"{instance_idx}\t{int(connections)}\t{nets_str}\n")
 
     def get_single_instance_net_hpwl(self, instance_id: int,
-                                     coords: Dict[str, Tuple[float, float]],
-                                     io_coords: Dict[str, Tuple[float, float]],
+                                     coords: torch.Tensor,
+                                     io_coords: Optional[torch.Tensor],
                                      include_io: bool = True) -> float:
-        instance_hpwl = 0.0
-        site_name = self.get_site_inst_name_by_id_func(instance_id)
-        if not self.has_net(site_name):   #TODO some of the IO site has no net out, always pad input to 0, need check
-            return instance_hpwl
-        net_group = self.site_to_nets[site_name]
-        instance_nets_connection = []
-        instance_coords = self.map_coords_to_instance_func(coords, io_coords, include_io)
-        for net_name in net_group:
-            instance_nets_connection.append(self.net_to_sites[net_name])
-        for connected_sites in instance_nets_connection:
-            hpwl, _ = self.hpwl_calculator.compute_single_instance_hpwl(connected_sites, instance_coords)
-            instance_hpwl += hpwl
+        return self.compute_instance_move_hpwl(instance_id,
+                                               coords,
+                                               io_coords,
+                                               include_io)
 
-        return instance_hpwl
+    def _candidate_pos_to_tensor(self,
+                                 instance_id: int,
+                                 candidate_pos: Tuple[float, float],
+                                 logic_coords: torch.Tensor,
+                                 io_coords: Optional[torch.Tensor]) -> torch.Tensor:
+        if candidate_pos is None:
+            return None
+
+        logic_len = logic_coords.shape[0] if logic_coords is not None else 0
+        if instance_id < logic_len and logic_coords is not None:
+            base_tensor = logic_coords
+        else:
+            base_tensor = io_coords
+
+        device = base_tensor.device if base_tensor is not None else torch.device(self.device)
+        dtype = base_tensor.dtype if base_tensor is not None else torch.float32
+        return torch.tensor([float(candidate_pos[0]), float(candidate_pos[1])],
+                            dtype=dtype,
+                            device=device)
+
+    def _get_coord_for_instance(self,
+                                target_instance_id: Optional[int],
+                                logic_coords: torch.Tensor,
+                                io_coords: Optional[torch.Tensor],
+                                include_io: bool,
+                                moving_instance_id: int,
+                                candidate_tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        if target_instance_id is None:
+            return None
+
+        logic_len = logic_coords.shape[0] if logic_coords is not None else 0
+
+        if target_instance_id < logic_len:
+            if logic_coords is None:
+                return None
+            if target_instance_id == moving_instance_id and candidate_tensor is not None:
+                return candidate_tensor
+            if 0 <= target_instance_id < logic_coords.shape[0]:
+                return logic_coords[target_instance_id]
+            return None
+
+        if not include_io or io_coords is None:
+            return None
+
+        io_idx = target_instance_id - logic_len
+        if io_idx < 0 or io_idx >= io_coords.shape[0]:
+            return None
+
+        if target_instance_id == moving_instance_id and candidate_tensor is not None:
+            return candidate_tensor
+        return io_coords[io_idx]
+
+    def compute_instance_move_hpwl(self,
+                                   instance_id: int,
+                                   logic_coords: torch.Tensor,
+                                   io_coords: Optional[torch.Tensor],
+                                   include_io: bool,
+                                   candidate_pos: Optional[Tuple[float, float]] = None,
+                                   candidate_tensor: Optional[torch.Tensor] = None) -> float:
+        site_name = self.get_site_inst_name_by_id_func(instance_id)
+        if site_name is None or not self.has_net(site_name):
+            return 0.0
+
+        if candidate_tensor is None and candidate_pos is not None:
+            candidate_tensor = self._candidate_pos_to_tensor(instance_id,
+                                                             candidate_pos,
+                                                             logic_coords,
+                                                             io_coords)
+
+        total_hpwl = 0.0
+        connected_nets = self.site_to_nets.get(site_name, [])
+
+        for net_name in connected_nets:
+            connected_sites = self.net_to_sites[net_name]
+            coords_list: List[torch.Tensor] = []
+            for connected_site in connected_sites:
+                target_id = self.get_site_inst_id_by_name_func(connected_site)
+                coord = self._get_coord_for_instance(target_id,
+                                                     logic_coords,
+                                                     io_coords,
+                                                     include_io,
+                                                     instance_id,
+                                                     candidate_tensor)
+                if coord is not None:
+                    coords_list.append(coord)
+
+            if len(coords_list) < 2:
+                continue
+
+            hpwl, _ = self.hpwl_calculator._compute_hpwl_from_coordinates(coords_list)
+            total_hpwl += hpwl
+
+        return total_hpwl
+
+    def compute_instance_move_hpwl_batch(self,
+                                         instance_id: int,
+                                         logic_coords: torch.Tensor,
+                                         io_coords: Optional[torch.Tensor],
+                                         include_io: bool,
+                                         candidate_positions: List[Tuple[float, float]]) -> List[float]:
+        if not candidate_positions:
+            return []
+
+        candidate_tensors = [
+            self._candidate_pos_to_tensor(instance_id, pos, logic_coords, io_coords)
+            for pos in candidate_positions
+        ]
+
+        if len(candidate_tensors) < self.hpwl_parallel_threshold or self.hpwl_workers == 1:
+            return [
+                self.compute_instance_move_hpwl(instance_id,
+                                                logic_coords,
+                                                io_coords,
+                                                include_io,
+                                                candidate_tensor=tensor)
+                for tensor in candidate_tensors
+            ]
+
+        executor = self._ensure_hpwl_executor()
+        futures = [
+            executor.submit(self.compute_instance_move_hpwl,
+                             instance_id,
+                             logic_coords,
+                             io_coords,
+                             include_io,
+                             None,
+                             tensor)
+            for tensor in candidate_tensors
+        ]
+        return [future.result() for future in futures]
+
+    def _ensure_hpwl_executor(self) -> ThreadPoolExecutor:
+        if self._hpwl_executor is None:
+            workers = max(1, min(self.hpwl_workers, len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else self.hpwl_workers))
+            self._hpwl_executor = ThreadPoolExecutor(max_workers=workers)
+        return self._hpwl_executor
+
+    def shutdown_hpwl_executor(self):
+        if self._hpwl_executor is not None:
+            self._hpwl_executor.shutdown(wait=False)
+            self._hpwl_executor = None

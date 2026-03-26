@@ -118,34 +118,26 @@ class Legalizer:
         empty_positions.insert(0, (conflict_x, conflict_y, 0))
         m = len(conflict_instances)
         n = min(len(empty_positions), m + 3)
+        candidate_positions = empty_positions[:n]
+        candidate_xy = [(pos_x, pos_y) for pos_x, pos_y, _ in candidate_positions]
         cost_matrix = torch.zeros((m, n), device=self.device)
 
         for i, instance_id in enumerate(conflict_instances):
-            current_hpwl = self.placer.net_manager.get_single_instance_net_hpwl(
+            current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
                 instance_id, logic_coords, io_coords, include_io
             )
 
+            hpwl_candidates = self.placer.net_manager.compute_instance_move_hpwl_batch(
+                instance_id,
+                logic_coords,
+                io_coords,
+                include_io,
+                candidate_xy
+            )
+
             for j in range(n):
-                pos_x, pos_y, dist = empty_positions[j]
-
-                if grid is self.logic_grid:
-                    temp_logic = logic_coords.clone()
-                    if instance_id < temp_logic.shape[0]:
-                        temp_logic[instance_id] = torch.tensor([pos_x, pos_y], device=self.device)
-                    temp_io = io_coords
-                else:
-                    temp_logic = logic_coords
-                    if io_coords is not None and instance_id >= logic_coords.shape[0]:
-                        io_idx = instance_id - logic_coords.shape[0]
-                        temp_io = io_coords.clone()
-                        temp_io[io_idx] = torch.tensor([pos_x, pos_y], device=self.device)
-                    else:
-                        temp_io = io_coords
-
-                new_hpwl = self.placer.net_manager.get_single_instance_net_hpwl(
-                    instance_id, temp_logic, temp_io, include_io
-                )
-
+                _, _, dist = candidate_positions[j]
+                new_hpwl = hpwl_candidates[j]
                 hpwl_change = new_hpwl - current_hpwl
                 distance_penalty = dist * 0.1
                 cost_matrix[i, j] = hpwl_change + distance_penalty
@@ -281,7 +273,7 @@ class Legalizer:
             return False, 0.0
 
         # 获取当前位置的HPWL
-        current_hpwl = self.placer.net_manager.get_single_instance_net_hpwl(
+        current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
             instance_id, logic_coords, io_coords, include_io
         )
 
@@ -308,22 +300,12 @@ class Legalizer:
                     grid.get_position_occupants(new_x, new_y)[0] == instance_id):
 
                     # 创建临时坐标
-                    if grid is self.logic_grid:
-                        temp_logic = logic_coords.clone()
-                        if instance_id < temp_logic.shape[0]:
-                            temp_logic[instance_id] = torch.tensor([new_x, new_y], device=self.device)
-                        temp_io = io_coords
-                    else:
-                        temp_logic = logic_coords
-                        if io_coords is not None and instance_id >= logic_coords.shape[0]:
-                            io_idx = instance_id - logic_coords.shape[0]
-                            temp_io = io_coords.clone()
-                            temp_io[io_idx] = torch.tensor([new_x, new_y], device=self.device)
-                        else:
-                            temp_io = io_coords
-
-                    new_hpwl = self.placer.net_manager.get_single_instance_net_hpwl(
-                        instance_id, temp_logic, temp_io, include_io
+                    new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
+                        instance_id,
+                        logic_coords,
+                        io_coords,
+                        include_io,
+                        candidate_pos=(new_x, new_y)
                     )
 
                     if new_hpwl < best_hpwl:

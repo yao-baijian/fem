@@ -30,7 +30,11 @@ class FpgaPlacer:
                  place_mode = IoMode.NORMAL,
                  utilization_factor = 0.3,
                  debug = True,
-                 device = 'cpu'):
+                 device = 'cpu',
+                 record_mode = 'simple', #simple, inverse, inverse_sqr, no
+                 map_mode = 'avg',  #simple, avg, no
+                 hpwl_workers = None,
+                 hpwl_parallel_threshold = 4):
         
         self.total_insts_num = 0
         self.other_insts_num = 0
@@ -58,10 +62,18 @@ class FpgaPlacer:
         self.utilization_factor = utilization_factor
         self.debug = debug
         self.net_manager = NetManager(self.get_site_inst_id_by_name, 
-                                      self.get_inst_name_by_id,
-                                      self.map_coords_to_instance,
-                                      debug=self.debug,
-                                      device=device)
+                          self.get_inst_name_by_id,
+                          self.map_coords_to_instance,
+                          debug=self.debug,
+                          device=device,
+                          record_mode=record_mode,
+                          map_mode=map_mode,
+                          hpwl_workers=hpwl_workers,
+                          hpwl_parallel_threshold=hpwl_parallel_threshold)
+        self.record_mode = record_mode
+        self.map_mode = map_mode
+        self.hpwl_workers = hpwl_workers
+        self.hpwl_parallel_threshold = hpwl_parallel_threshold
         
         self.logic_site_coords = None
         self.site_coords_all = None
@@ -72,6 +84,16 @@ class FpgaPlacer:
         self.result_dir = 'result'
         pass
     
+    def close(self):
+        if hasattr(self, 'net_manager') and self.net_manager is not None:
+            self.net_manager.shutdown_hpwl_executor()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def set_instance_name(self, instance_name, result_dir='result'):
         self.instance_name = instance_name
         self.result_dir = result_dir

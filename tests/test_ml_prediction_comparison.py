@@ -25,15 +25,15 @@ instances = ['s13207', 's35932', 'LU8PEEng', 'sv_chip0_hierarchy_no_mem']
 
 num_trials = 5
 num_steps = 200
-dev = 'cpu'
+dev = 'cuda'
 manual_grad = False
-anneal = 'inverse'
+anneal = 'lin'
 place_type = PlaceType.CENTERED
 debug = False
 overlap_allowed_max = 0.05 # 1% overlap allowed, as stated in the paper
 
 DEFAULT_ALPHA = 10.0
-MAX_WORKERS = 4
+MAX_WORKERS = 10
 
 def evaluate_placement(fpga_placer, inst_num, alpha, beta=0.0):
     """Evaluate placement for a given alpha using shared logic helper.
@@ -53,7 +53,7 @@ def evaluate_placement(fpga_placer, inst_num, alpha, beta=0.0):
     )
 
     overlap = res['overlap']
-    fem_hpwl_final = res['fem_hpwl_final']
+    fem_hpwl = res['fem_hpwl_initial']
     elapsed = res['time']
 
     logic_inst_total = float(inst_num.get('logic_inst_num', 0))
@@ -62,7 +62,7 @@ def evaluate_placement(fpga_placer, inst_num, alpha, beta=0.0):
     hpwl_key = 'hpwl_no_io' if place_type != PlaceType.IO else 'hpwl'
 
     return {
-        'hpwl': fem_hpwl_final[hpwl_key],
+        'hpwl': fem_hpwl[hpwl_key],
         'overlap': overlap,
         'overlap_percent': overlap_percent,
         'time': elapsed,
@@ -118,7 +118,7 @@ def run_grid_search(fpga_placer, inst_num):
         fem_hpwl_initial = fpga_placer.net_manager.analyze_solver_hpwl(
             real_logic_coords, None, False
         )
-        hpwl = fem_hpwl_initial["hpwl"]
+        hpwl = fem_hpwl_initial["hpwl_no_io"] if place_type != PlaceType.IO else fem_hpwl_initial["hpwl"]
 
         logic_inst_total = float(inst_num.get('logic_inst_num', 0))
         overlap_percent = float(overlap) / logic_inst_total if logic_inst_total > 0 else 0.0

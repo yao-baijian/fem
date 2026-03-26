@@ -48,10 +48,10 @@ def get_vivado_place_times(logs_dir='./vivado/output_dir'):
 
 vivado_place_times = get_vivado_place_times()
 
-SET_LEVEL('WARNING')
+SET_LEVEL('INFO')
 
-instances = ['c2670', 'c5315', 'c6288', 'c7552',
-             's1488', 's5378', 's9234', 's15850', 'bgm', 'sha1', 'RLE_BlobMerging', 'FPGA-example1']
+# instances = ['c2670', 'c5315', 'c6288', 'c7552',
+#              's1488', 's5378', 's9234', 's15850', 'bgm', 'sha1', 'RLE_BlobMerging', 'FPGA-example1']
 
 # instances = ['bgm', 'blob_merge', 'boundtop', 'ch_intrinsics', 'diffeq', 'diffeq2', 'LU8PEEng', 
 #             'LU32PEEng', 'mcml', 'mkDelayWorker32B', 'mkPktMerge', 'mkSMAdapter4B', 'or1200', 
@@ -60,9 +60,11 @@ instances = ['c2670', 'c5315', 'c6288', 'c7552',
 # instances = ['c2670_boundary', 'c5315_boundary', 'c6288_boundary', 'c7552_boundary',
 #              's1488_boundary', 's5378_boundary', 's9234_boundary', 's15850_boundary', 'FPGA-example1_boundary']
 
-instances = ['c2670_boundary']
+# instances = ['c2670_boundary']
 
-# instances = ['bgm_boundary', 'sha1_boundary', 'RLE_BlobMerging_boundary']
+instances = ['bgm_boundary']
+
+# 'bgm_boundary', 'RLE_BlobMerging_boundary', 'sha1_boundary'
 
 # instances = ['bgm', 'sha1', 'RLE_BlobMerging']
             
@@ -71,17 +73,17 @@ draw_loss_function = False
 draw_final_placement = False
 num_trials = 5
 num_steps = 200
-dev = 'cpu'
+dev = 'cuda'
 manual_grad = False
 anneal='lin'
-io_factor = 400.0
+io_factor = 1
 
 print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Net/Total':<14} {'Overlap':<8} "
-      f"{'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12} {'Time(s)':<10} {'VivadoTime(s)':<14}")
+    f"{'Alpha':<8} {'Beta':<8} {'HPWL Init':<18} {'HPWL Final':<16} {'HPWL Vivado':<12} {'Time(s)':<10} {'VivadoTime(s)':<14}")
 
 for instance in instances:
     place_type = PlaceType.IO
-    debug = True
+    debug = False
     fpga_placer = FpgaPlacer(place_orientation = place_type, 
                             grid_type = GridType.SQUARE,
                             place_mode = IoMode.VIRTUAL_NODE,
@@ -101,10 +103,14 @@ for instance in instances:
     
     alpha = predict_alpha(row)
     INFO(f'instance {instance}, predicted alpha {alpha}')
-    fpga_placer.set_alpha(alpha)
+    used_alpha = alpha * 0.005
+    fpga_placer.set_alpha(used_alpha)
 
     if place_type == PlaceType.IO:
-        fpga_placer.set_beta(alpha)
+        used_beta =used_alpha
+        fpga_placer.set_beta(used_beta)
+    else:
+        used_beta = 0.0
 
     # fpga_placer.set_alpha(30)
     
@@ -157,14 +163,14 @@ for instance in instances:
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, all_coords)
         vivado_time_str = str(vivado_place_times.get(instance, 'N/A'))
         print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
-            f"{fem_hpwl_initial['hpwl']:<18.2f} {fem_hpwl_final['hpwl']:<16.2f} {vivado_hpwl['hpwl']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
+            f"{used_alpha:<8.2f} {used_beta:<8.2f} {fem_hpwl_initial['hpwl']:<18.2f} {fem_hpwl_final['hpwl']:<16.2f} {vivado_hpwl['hpwl']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
     else:
         real_logic_coords = config[optimal_inds[0]]
         placement_legalized, overlap, fem_hpwl_initial, fem_hpwl_final = legalizer.legalize_placement(real_logic_coords, logic_ids)
         routes = router.route_connections(fpga_placer.net_manager.insts_matrix, (placement_legalized[0]))
         vivado_time_str = str(vivado_place_times.get(instance, 'N/A'))
         print(f"{'Benchmarks':<12} {instance:<10} {inst_num['logic_inst_num']:<6} {inst_num['io_inst_num']:<6} {net_ratio:<14} {overlap:<8} "
-            f"{fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl['hpwl_no_io']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
+            f"{used_alpha:<8.2f} {used_beta:<8.2f} {fem_hpwl_initial['hpwl_no_io']:<18.2f} {fem_hpwl_final['hpwl_no_io']:<16.2f} {vivado_hpwl['hpwl_no_io']:<12.2f} {optimize_time:<10.2f} {vivado_time_str:<14}")
     
     if draw_loss_function:
         global_drawer.plot_fpga_placement_loss(f'result/{instance}/hpwl_loss.png')
