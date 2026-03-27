@@ -31,8 +31,9 @@ class FpgaPlacer:
                  utilization_factor = 0.3,
                  debug = True,
                  device = 'cpu',
-                 record_mode = 'simple', #simple, inverse, inverse_sqr, no
-                 map_mode = 'avg',  #simple, avg, no
+                 record_mode = 'inverse_sqr', #simple, inverse, inverse_sqr, inverse_log, degree_inverse, no
+                 map_mode = 'no',  #simple, avg, log, no
+                 net_offset_coeff: float = 1.0, #-1, 0, 1
                  hpwl_workers = None,
                  hpwl_parallel_threshold = 4):
         
@@ -68,10 +69,12 @@ class FpgaPlacer:
                           device=device,
                           record_mode=record_mode,
                           map_mode=map_mode,
+                          offset_coeff=net_offset_coeff,
                           hpwl_workers=hpwl_workers,
                           hpwl_parallel_threshold=hpwl_parallel_threshold)
         self.record_mode = record_mode
         self.map_mode = map_mode
+        self.net_offset_coeff = net_offset_coeff
         self.hpwl_workers = hpwl_workers
         self.hpwl_parallel_threshold = hpwl_parallel_threshold
         

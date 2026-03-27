@@ -62,7 +62,7 @@ SET_LEVEL('INFO')
 
 # instances = ['c2670_boundary']
 
-instances = ['bgm_boundary']
+instances = ['RLE_BlobMerging_boundary']
 
 # 'bgm_boundary', 'RLE_BlobMerging_boundary', 'sha1_boundary'
 
@@ -72,10 +72,10 @@ draw_evolution = False
 draw_loss_function = False
 draw_final_placement = False
 num_trials = 5
-num_steps = 200
+num_steps = 500
 dev = 'cuda'
 manual_grad = False
-anneal='lin'
+anneal='exp'
 io_factor = 1
 
 print(f"{'Benchmarks':<12} {'Instance':<10} {'Inst':<6} {'IO Inst':<6} {'Net/Total':<14} {'Overlap':<8} "
@@ -103,11 +103,11 @@ for instance in instances:
     
     alpha = predict_alpha(row)
     INFO(f'instance {instance}, predicted alpha {alpha}')
-    used_alpha = alpha * 0.005
+    used_alpha = alpha * 0.001
     fpga_placer.set_alpha(used_alpha)
 
     if place_type == PlaceType.IO:
-        used_beta =used_alpha
+        used_beta =alpha * 0.001
         fpga_placer.set_beta(used_beta)
     else:
         used_beta = 0.0

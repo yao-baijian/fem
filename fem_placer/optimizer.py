@@ -54,6 +54,7 @@ class FPGAPlacementOptimizer:
             dtype: torch.dtype = torch.float32,
             with_io: bool = False,
             manual_grad: bool = False,
+            distance_metric: str = 'manhattan',
         ):
         """
         Initialize the FPGA placement optimizer with QUBO formulation.
@@ -98,6 +99,10 @@ class FPGAPlacementOptimizer:
         self.seed = seed
         self.with_io = with_io
         self.manual_grad = manual_grad
+        metric = distance_metric.lower()
+        if metric not in ('manhattan', 'sqrt_manhattan'):
+            raise ValueError("distance_metric must be either 'manhattan' or 'sqrt_manhattan'")
+        self.distance_metric = metric
 
         self.D = None
 
@@ -146,11 +151,18 @@ class FPGAPlacementOptimizer:
             'dev': target_dev,
             'dtype': torch.float32,
             'with_io': params['with_io'],
+            'distance_metric': params.get('distance_metric', 'manhattan'),
         }
         
         default_kwargs.update(kwargs)
         
         return cls(**default_kwargs)
+
+    def _apply_distance_metric(self, distance_tensor: torch.Tensor) -> torch.Tensor:
+        """Apply the configured distance metric transformation."""
+        if self.distance_metric == 'sqrt_manhattan':
+            return torch.sqrt(distance_tensor)
+        return distance_tensor
 
     def _initialize(self):
 
@@ -176,14 +188,14 @@ class FPGAPlacementOptimizer:
 
             Dx_LL = torch.abs(x_logic.unsqueeze(1) - x_logic.unsqueeze(0))
             Dy_LL = torch.abs(y_logic.unsqueeze(1) - y_logic.unsqueeze(0))
-            self.D_LL = Dx_LL + Dy_LL
+            self.D_LL = self._apply_distance_metric(Dx_LL + Dy_LL)
 
             x_io = self.io_site_coords[:, 0]
             y_io = self.io_site_coords[:, 1]
 
             Dx_LI = torch.abs(x_logic.unsqueeze(1) - x_io.unsqueeze(0))
             Dy_LI = torch.abs(y_logic.unsqueeze(1) - y_io.unsqueeze(0))
-            self.D_LI = Dx_LI + Dy_LI
+            self.D_LI = self._apply_distance_metric(Dx_LI + Dy_LI)
 
             return h_logic, h_io
 
@@ -197,7 +209,8 @@ class FPGAPlacementOptimizer:
 
         coords_i = self.logic_site_coords.unsqueeze(1)
         coords_j = self.logic_site_coords.unsqueeze(0)
-        self.D = torch.sum(torch.abs(coords_i - coords_j), dim=2)
+        base_distance = torch.sum(torch.abs(coords_i - coords_j), dim=2)
+        self.D = self._apply_distance_metric(base_distance)
 
         return h
 

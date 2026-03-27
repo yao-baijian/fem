@@ -58,35 +58,69 @@ class Grid:
         return x * 10000 + y  # 假设y不会超过10000
 
     def find_empty_positions_nearby(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        """Best-first multi-directional empty search.
+
+        The search expands outwards via a min-heap ordered by Manhattan distance,
+        ensuring that candidates are visited in the order we would naturally expect.
+        Use ``find_empty_positions_nearby_legacy`` if you need the prior
+        bisect-based implementation for comparison.
         """
-        二分查找最近的空位置，自动延展直到找到足够数量或遍历完所有空位置
-        """
+        if needed_count <= 0 or self.area <= 0:
+            return []
+
+        result: List[Tuple[int, int, int]] = []
+        visited: Set[Tuple[int, int]] = set()
+        heap: List[Tuple[int, int, int]] = []  # (distance, x, y)
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        def push_candidate(x: int, y: int):
+            if not self.is_within_bounds(x, y):
+                return
+            key = (x, y)
+            if key in visited:
+                return
+            visited.add(key)
+            distance = abs(x - start_x) + abs(y - start_y)
+            heapq.heappush(heap, (distance, x, y))
+
+        push_candidate(start_x, start_y)
+
+        while heap and len(result) < needed_count:
+            distance, cx, cy = heapq.heappop(heap)
+
+            if (cx, cy) != (start_x, start_y) and self.is_position_empty(cx, cy):
+                result.append((cx, cy, distance))
+                if len(result) >= needed_count:
+                    break
+
+            for dx, dy in directions:
+                push_candidate(cx + dx, cy + dy)
+
+        return result
+
+    def find_empty_positions_nearby_legacy(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        """Legacy bisect-based search preserved for debugging and comparisons."""
         if not self._empty_positions:
             return []
-        
-        result = []
-        
-        # 二分查找插入位置
-        import bisect
+
+        result: List[Tuple[int, int, int]] = []
         pos = bisect.bisect_left(self._empty_positions, (start_x, start_y))
-        
-        # 左右指针向两边扩展，直到找到足够数量或遍历完
+
         left = pos - 1
         right = pos
-        
+
         while len(result) < needed_count and (left >= 0 or right < len(self._empty_positions)):
             left_dist = float('inf')
             right_dist = float('inf')
-            
+
             if left >= 0:
                 left_x, left_y = self._empty_positions[left]
                 left_dist = abs(left_x - start_x) + abs(left_y - start_y)
-            
+
             if right < len(self._empty_positions):
                 right_x, right_y = self._empty_positions[right]
                 right_dist = abs(right_x - start_x) + abs(right_y - start_y)
-            
-            # 选择距离更近的
+
             if left_dist <= right_dist:
                 x, y = self._empty_positions[left]
                 if (x, y) != (start_x, start_y):
@@ -97,7 +131,7 @@ class Grid:
                 if (x, y) != (start_x, start_y):
                     result.append((x, y, right_dist))
                 right += 1
-        
+
         return result
         
     def update_empty_on_place(self, x: int, y: int):

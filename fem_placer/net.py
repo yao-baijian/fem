@@ -19,7 +19,8 @@ class NetManager:
                  debug=False,
                  device='cpu',
                  record_mode='simple',
-                 map_mode='avg',
+                 map_mode='simple',
+                 offset_coeff: float = 1.0,
                  hpwl_workers=None,
                  hpwl_parallel_threshold=4):
 
@@ -46,6 +47,7 @@ class NetManager:
         self.hpwl_calculator = HPWLCalculator(device, debug=debug)
         self.record_mode = record_mode
         self.map_mode = map_mode
+        self.offset_coeff = float(offset_coeff)
         cpu_count = os.cpu_count() or 4
         default_workers = max(1, cpu_count // 2)
         self.hpwl_workers = hpwl_workers if hpwl_workers is not None else default_workers
@@ -241,6 +243,7 @@ class NetManager:
         self.net_names = [net.getName() for net in self.nets]
         sites_net_list = []
         valid_net_num = 0
+        connectivity_groups: List[Tuple[Set[str], Set[str]]] = []
 
         for net in self.nets:
             net_name = net.getName()
@@ -271,7 +274,7 @@ class NetManager:
                     if site_name not in self.site_to_nets:
                         self.site_to_nets[site_name] = []
                     self.site_to_nets[site_name].append(net_name)
-                self._record_connectivity(logic_sites, io_sites)
+                connectivity_groups.append((logic_sites, io_sites))
             else:
                 # WARNING(f'Net {net_name} skipped, logic: {logic_sites}, io: {io_sites}')
                 pass
@@ -279,6 +282,9 @@ class NetManager:
             if len(logic_sites) >= 2:
                 valid_net_num += 1
                 sites_net_list.append(logic_sites)
+
+        for logic_sites, io_sites in connectivity_groups:
+            self._record_connectivity(logic_sites, io_sites)
 
         self._create_net_tensor(valid_net_num, sites_net_list, logic_insts_num)
         self._create_net_matrix(logic_insts_num, io_insts_num)
@@ -296,30 +302,57 @@ class NetManager:
             }
 
     def _record_connectivity(self, logic_sites: Set[str], io_sites: Set[str]):
-        logic_sites_list = list(logic_sites)
-        io_sites_list = list(io_sites)
+        logic_inst_list = list(logic_sites)
+        io_inst_list = list(io_sites)
 
         weight = 1
-        offset_coeff = 1
+        offset_coeff = self.offset_coeff
 
         if self.record_mode == 'simple':
             io_increment = 1.0
             logic_increment = 1.0
         elif self.record_mode == 'inverse':
-            denom_io = float(len(logic_sites_list) + len(io_sites_list) + offset_coeff)
-            denom_logic = float(len(logic_sites_list) + offset_coeff)
+            denom_io = float(len(logic_inst_list) + len(io_inst_list) + offset_coeff)
+            denom_logic = float(len(logic_inst_list) + offset_coeff)
             io_increment = weight / denom_io if denom_io > 0 else 0.0
             logic_increment = weight / denom_logic if denom_logic > 0 else 0.0
         elif self.record_mode == 'inverse_sqr':
-            denom_io = float(len(logic_sites_list) + len(io_sites_list) + offset_coeff) ** 2
-            denom_logic = float(len(logic_sites_list) + offset_coeff) ** 2
+            denom_io = float(len(logic_inst_list) + len(io_inst_list) + offset_coeff) ** 2
+            denom_logic = float(len(logic_inst_list) + offset_coeff) ** 2
             io_increment = weight / denom_io if denom_io > 0 else 0.0
             logic_increment = weight / denom_logic if denom_logic > 0 else 0.0
+        elif self.record_mode == 'inverse_log':
+            denom_io = float(len(logic_inst_list) + len(io_inst_list) + offset_coeff)
+            denom_logic = float(len(logic_inst_list) + offset_coeff)
+            io_increment = weight / np.log2(denom_io) if denom_io > 1.0 else 0.0
+            logic_increment = weight / np.log2(denom_logic) if denom_logic > 1.0 else 0.0
+        elif self.record_mode == 'degree_inverse':
+            denom_io = float(len(logic_inst_list) + len(io_inst_list) + offset_coeff)
+            denom_logic = float(len(logic_inst_list) + offset_coeff)
+
+            def inv_degree_sum(inst_names: List[str]) -> float:
+                total = 0.0
+                for inst_name in inst_names:
+                    degree_weight = len(self.site_to_nets.get(inst_name, []))
+                    if degree_weight > 0:
+                        total += 1.0 / np.sqrt(float(degree_weight))
+                return total
+
+            io_sites_all = logic_inst_list + io_inst_list
+            # io_increment = inv_degree_sum(io_sites_all) / denom_io
+            # logic_increment = inv_degree_sum(logic_inst_list) / denom_logic
+
+            io_increment = inv_degree_sum(io_sites_all)
+            logic_increment = inv_degree_sum(logic_inst_list)
+        else:
+            WARNING(f"Unknown record_mode '{self.record_mode}', fallback to 'simple'.")
+            io_increment = 1.0
+            logic_increment = 1.0
 
         # 1. IO to logic
-        for i in range(len(io_sites_list)):
-            for j in range(len(logic_sites_list)):
-                io_inst1, inst2 = io_sites_list[i], logic_sites_list[j]
+        for i in range(len(io_inst_list)):
+            for j in range(len(logic_inst_list)):
+                io_inst1, inst2 = io_inst_list[i], logic_inst_list[j]
 
                 if io_inst1 not in self.io_to_site_connectivity:
                     self.io_to_site_connectivity[io_inst1] = {}
@@ -335,9 +368,9 @@ class NetManager:
 
 
         # 2. Logic to logic
-        for i in range(len(logic_sites_list)):
-            for j in range(i + 1, len(logic_sites_list)):
-                inst1, inst2 = logic_sites_list[i], logic_sites_list[j]
+        for i in range(len(logic_inst_list)):
+            for j in range(i + 1, len(logic_inst_list)):
+                inst1, inst2 = logic_inst_list[i], logic_inst_list[j]
 
                 if inst1 not in self.site_to_site_connectivity:
                     self.site_to_site_connectivity[inst1] = {}
@@ -382,12 +415,15 @@ class NetManager:
 
         if self.map_mode == 'simple':
             max_val = torch.max(self.insts_matrix)
-            if max_val.item() > 0:
-                self.insts_matrix = self.insts_matrix / max_val
+            self.insts_matrix = self.insts_matrix / max_val
+        elif self.map_mode == 'log':
+            self.insts_matrix = torch.log1p(self.insts_matrix)
         elif self.map_mode == 'avg':
             denom = float(self.insts_matrix.shape[1]) ** 0.5
-            if denom > 0:
-                self.insts_matrix = self.insts_matrix / denom
+            self.insts_matrix = self.insts_matrix / denom
+
+        # max_val = torch.max(self.insts_matrix)
+        # self.insts_matrix = self.insts_matrix * 10 / (max_val)
 
         self.io_insts_matrix_all = torch.zeros((n + k, n + k), device=self.device)
 
@@ -408,12 +444,15 @@ class NetManager:
 
         if self.map_mode == 'simple':
             max_val_io = torch.max(self.io_insts_matrix)
-            if max_val_io.item() > 0:
-                self.io_insts_matrix = self.io_insts_matrix / max_val_io
+            self.io_insts_matrix = self.io_insts_matrix / max_val_io
+        elif self.map_mode == 'log':
+            self.io_insts_matrix = torch.log1p(self.io_insts_matrix)
         elif self.map_mode == 'avg':
             denom = float(self.io_insts_matrix.shape[1]) ** 0.5
-            if denom > 0:
-                self.io_insts_matrix = self.io_insts_matrix / denom
+            self.io_insts_matrix = self.io_insts_matrix / denom
+        
+        # max_val_io = torch.max(self.io_insts_matrix)
+        # self.io_insts_matrix = self.io_insts_matrix / (max_val_io)
 
         def _matrix_stats(tensor):
             if tensor is None or tensor.numel() == 0:

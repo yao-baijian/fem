@@ -170,6 +170,35 @@ class HollowGrid(Grid):
         return len(self._grid[grid_x][grid_y]) == 0
 
     def find_empty_positions_nearby(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        """Ring-prioritized search with best-first fallback for IO boundaries."""
+        if needed_count <= 0:
+            return []
+
+        primary_candidates = self.find_empty_positions_nearby_legacy(start_x, start_y, needed_count)
+        if len(primary_candidates) >= needed_count:
+            return primary_candidates[:needed_count]
+
+        result = list(primary_candidates)
+        seen: Set[Tuple[int, int]] = {(x, y) for x, y, _ in result}
+        remaining = needed_count - len(result)
+
+        if remaining <= 0:
+            return result
+
+        fallback_candidates = super().find_empty_positions_nearby(start_x, start_y, remaining)
+        for candidate in fallback_candidates:
+            coords = (candidate[0], candidate[1])
+            if coords in seen:
+                continue
+            result.append(candidate)
+            seen.add(coords)
+            if len(result) >= needed_count:
+                break
+
+        return result
+
+    def find_empty_positions_nearby_legacy(self, start_x: int, start_y: int, needed_count: int) -> List[Tuple[int, int, int]]:
+        """Legacy ring-expansion search preserved for comparison/debugging."""
         order_info = self._boundary_lookup.get((start_x, start_y))
         if order_info is None or not self._boundary_layers:
             return super().find_empty_positions_nearby(start_x, start_y, needed_count)
