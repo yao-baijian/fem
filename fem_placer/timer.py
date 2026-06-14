@@ -37,7 +37,7 @@ DEFAULT_CELL_DELAYS = {
 
 # Wire delay per site pitch (ps per SLICE)
 # For Ultrascale: ~0.2-0.5 ps per site for local routing
-DEFAULT_WIRE_DELAY_PER_SITE = 0.3e-12  # 0.3 ps per site pitch
+DEFAULT_WIRE_DELAY_PER_SITE = 0.35e-12  # 0.3 ps per site pitch
 
 # Default clock period if none specified (ns)
 DEFAULT_CLOCK_PERIOD = 5.0  # 200 MHz
@@ -147,6 +147,10 @@ class TimingSummary:
     num_violations: int      # Number of paths with violations
     wire_delays: Dict[str, float] = field(default_factory=dict)  # Per-net wire delay
     top_violated_nets: List[Tuple[str, float]] = field(default_factory=list)
+    cell_type_counts: Dict[str, int] = field(default_factory=dict)  # Cell type → count
+    max_fanout: int = 0      # Maximum net fanout
+    avg_fanout: float = 0.0  # Average net fanout
+    unidentified_cells: int = 0  # Cells not classified as FF or combo
 
     def format_report(self) -> str:
         """Format timing summary as a readable report string."""
@@ -162,6 +166,14 @@ class TimingSummary:
         lines.append(f"  Logic Depth         : {self.logic_depth} levels")
         lines.append(f"  Timing Paths        : {self.num_paths}")
         lines.append(f"  Violating Paths     : {self.num_violations}")
+        lines.append(f"  Max Fanout          : {self.max_fanout}")
+        lines.append(f"  Avg Fanout          : {self.avg_fanout:.1f}")
+        if self.cell_type_counts:
+            lines.append(f"  Cell Types          :")
+            top_types = sorted(self.cell_type_counts.items(), key=lambda x: -x[1])[:10]
+            for t, c in top_types:
+                lines.append(f"    {t:<20s}  {c:>6d}")
+        lines.append(f"  Unidentified Cells  : {self.unidentified_cells}")
         if self.top_violated_nets:
             lines.append(f"  Top Violated Nets   :")
             for net_name, slack in self.top_violated_nets[:10]:
@@ -200,6 +212,10 @@ class TimingAnalyzer:
         self.clock_period = clock_period
         self.ff_setup_time = ff_setup_time
         self.ff_clk2q_time = ff_clk2q_time
+        # UltraScale+ carry-chain boundary penalty (ps per CARRY8 macro crossing)
+        self.carry_boundary_penalty = 180e-12
+        # Clock uncertainty guard band (jitter + skew margin)
+        self.clock_uncertainty = 0.35e-9
 
     # =========================================================================
     # Framework-Level Timing Estimation
@@ -263,6 +279,13 @@ class TimingAnalyzer:
 
             # Estimate wire delay: HPWL * wire_delay_per_site
             wire_delay = hpwl * self.wire_delay_per_site
+
+            # Fanout magnification: high-fanout nets suffer extra routing delay
+            fanout = len(sites)
+            fanout_factor = 1.0 + 0.02 * fanout
+            fanout_factor = min(fanout_factor, 2.5)
+            wire_delay *= fanout_factor
+
             net_wire_delays[net_name] = wire_delay
             net_site_counts[net_name] = len(coords_list)
 
@@ -287,23 +310,34 @@ class TimingAnalyzer:
         num_critical_nets = min(logic_levels, len(sorted_nets))
         critical_nets = sorted_nets[:num_critical_nets]
 
+        # Apply congestion multiplier for deep logic paths
+        if logic_levels > 20:
+            congestion_mult = 1.0 + 0.005 * (logic_levels - 20)
+            congestion_mult = min(congestion_mult, 1.5)
+        else:
+            congestion_mult = 1.0
+
         # Sum delays along estimated critical path
         # Cell delay per stage
         total_cell_delay = logic_levels * avg_cell_delay
 
-        # Wire delay along critical path (sum of top N longest nets)
-        total_wire_delay_critical = sum(d for _, d in critical_nets)
+        # Wire delay along critical path (sum of top N longest nets), congestion-scaled
+        total_wire_delay_critical = sum(d for _, d in critical_nets) * congestion_mult
 
         # Clock-to-Q and setup overhead
         total_ff_overhead = self.ff_clk2q_time + self.ff_setup_time
 
-        critical_path_delay = total_cell_delay + total_wire_delay_critical + total_ff_overhead
+        # Carry-chain boundary penalty: estimate ~1 boundary per 8 carry stages
+        n_carry_stages = int(logic_levels * 0.3)  # rough fraction of carry in path
+        carry_penalty = (n_carry_stages // 8) * self.carry_boundary_penalty
 
-        # Compute WNS
-        wns = self.clock_period - critical_path_delay
+        critical_path_delay = (total_cell_delay + total_wire_delay_critical
+                               + total_ff_overhead + carry_penalty)
+
+        # Compute WNS with clock uncertainty guard band
+        wns = self.clock_period - critical_path_delay - self.clock_uncertainty
 
         # Compute TNS (sum of negative slacks across all paths)
-        # Estimate per-path delay for all significant nets
         tns = 0.0
         num_violations = 0
         all_path_delays = []
@@ -313,7 +347,7 @@ class TimingAnalyzer:
             path_delay = avg_cell_delay + wire_delay + self.ff_overhead_per_stage()
             all_path_delays.append(path_delay)
 
-            slack = self.clock_period - path_delay
+            slack = self.clock_period - path_delay - self.clock_uncertainty
             if slack < 0:
                 tns += slack
                 num_violations += 1
@@ -327,7 +361,7 @@ class TimingAnalyzer:
                     + sum(d for _, d in group)
                     + self.ff_clk2q_time + self.ff_setup_time
                 )
-                slack = self.clock_period - path_delay
+                slack = self.clock_period - path_delay - self.clock_uncertainty
                 if slack < 0:
                     tns += slack
 
@@ -339,9 +373,14 @@ class TimingAnalyzer:
         top_violated = []
         for net_name, wire_delay in sorted_nets:
             path_delay = avg_cell_delay + wire_delay + self.ff_overhead_per_stage()
-            slack = self.clock_period - path_delay
+            slack = self.clock_period - path_delay - self.clock_uncertainty
             if slack < 0:
                 top_violated.append((net_name, slack))
+
+        # Compute fanout stats from net_to_sites
+        fanouts = [len(s) for s in net_manager.net_to_sites.values()]
+        max_fanout = max(fanouts) if fanouts else 0
+        avg_fanout = sum(fanouts) / len(fanouts) if fanouts else 0.0
 
         return TimingSummary(
             wns=wns,
@@ -354,6 +393,8 @@ class TimingAnalyzer:
             num_violations=num_violations,
             wire_delays=net_wire_delays,
             top_violated_nets=top_violated[:20],
+            max_fanout=max_fanout,
+            avg_fanout=avg_fanout,
         )
 
     # =========================================================================
@@ -537,13 +578,18 @@ class TimingAnalyzer:
         # ------------------------------------------------------------------
         # fanin[snk_cell]  = [driver_cell, ...]  — all cells feeding snk_cell
         # fanout[src_cell] = [snk_cell, ...]     — all cells src_cell drives
+        # fanout_map[(driver, sink)] = fanout of the net connecting them
         fanin: Dict[str, List[str]] = {}
         fanout: Dict[str, List[str]] = {}
+        fanout_map: Dict[tuple, int] = {}
         for src_cell, net_list in cell_out_nets.items():
             for net_name in net_list:
-                for (snk_cell, _, _) in net_in_cells.get(net_name, []):
+                sinks = net_in_cells.get(net_name, [])
+                net_fanout = len(sinks)
+                for (snk_cell, _, _) in sinks:
                     fanin.setdefault(snk_cell, []).append(src_cell)
                     fanout.setdefault(src_cell, []).append(snk_cell)
+                    fanout_map[(src_cell, snk_cell)] = net_fanout
 
         # Identify FF sources and FF sinks
         all_ff_cells = {c for c, (ct, _) in cell_info.items() if _ctype(ct)[0]}
@@ -597,14 +643,24 @@ class TimingAnalyzer:
                 return self.cell_delays.get('BRAM', {}).get('max', 600e-12)
             return 60e-12
 
-        def _wire_delay_between(a: str, b: str) -> float:
+        def _wire_delay_between(a: str, b: str, fanout: int = 0) -> float:
             _, site_a = cell_info.get(a, ('', ''))
             _, site_b = cell_info.get(b, ('', ''))
-            if site_a in site_to_coord and site_b in site_to_coord:
+            if site_a and site_a == site_b:
+                # Intra-site: internal slice routing has fixed pin-to-pin delay
+                delay = 45e-12
+            elif site_a in site_to_coord and site_b in site_to_coord:
                 x1, y1 = site_to_coord[site_a]
                 x2, y2 = site_to_coord[site_b]
-                return (abs(x1 - x2) + abs(y1 - y2)) * self.wire_delay_per_site
-            return 0.0
+                delay = (abs(x1 - x2) + abs(y1 - y2)) * self.wire_delay_per_site
+            else:
+                return 0.0
+            # Fanout magnification: high-fanout nets have extra routing delay
+            if fanout > 1:
+                fanout_factor = 1.0 + 0.02 * fanout
+                fanout_factor = min(fanout_factor, 2.5)
+                delay *= fanout_factor
+            return delay
 
         # ------------------------------------------------------------------
         # 6. Propagate Arrival Times (AT) through the DAG
@@ -624,23 +680,64 @@ class TimingAnalyzer:
         for ff in ff_sources:
             depth[ff] = 0
 
+        # Track consecutive carry stages on the worst path to each cell
+        consec_carry: Dict[str, int] = {}
+        for ff in ff_sources:
+            consec_carry[ff] = 0
+
         # Process combos in topological order
         for combo in sorted_combos:
             max_arrival = 0.0
             max_depth = 0
+            best_carry_cnt = 0
+            ctype, _ = cell_info.get(combo, ('', ''))
+            is_carry = 'CARRY' in ctype.upper()
+
             for driver in fanin.get(combo, []):
                 driver_at = AT.get(driver, 0.0)
-                arrival = driver_at + _wire_delay_between(driver, combo)
-                max_arrival = max(max_arrival, arrival)
-                max_depth = max(max_depth, depth.get(driver, 0))
-            ctype, _ = cell_info.get(combo, ('', ''))
+                # Apply congestion multiplier to wire delay based on driver depth
+                d = depth.get(driver, 0)
+                if d > 20:
+                    cong_mult = 1.0 + 0.005 * (d - 20)
+                    cong_mult = min(cong_mult, 1.5)
+                else:
+                    cong_mult = 1.0
+                fo = fanout_map.get((driver, combo), 0)
+                wire_d = _wire_delay_between(driver, combo, fanout=fo) * cong_mult
+                arrival = driver_at + wire_d
+
+                # Add carry-chain boundary penalty every 8 consecutive carry steps
+                dc = consec_carry.get(driver, 0)
+                if is_carry and 'CARRY' in cell_info.get(driver, ('', ''))[0].upper():
+                    # Continuing a carry chain: penalty every 8th step
+                    dc += 1
+                    if dc > 0 and dc % 8 == 0:
+                        arrival += self.carry_boundary_penalty
+                elif is_carry:
+                    # Starting a new carry chain after non-carry
+                    dc = 1
+                # else: not a carry cell, dc stays as inherited
+
+                if arrival > max_arrival:
+                    max_arrival = arrival
+                    max_depth = max(max_depth, d)
+                    best_carry_cnt = dc
+                elif arrival == max_arrival:
+                    max_depth = max(max_depth, d)
+                    best_carry_cnt = max(best_carry_cnt, dc)
+
+            # Fallback carry tracking when no fanin
+            if not fanin.get(combo):
+                best_carry_cnt = 1 if is_carry else 0
+
             AT[combo] = max_arrival + _cell_type_to_delay(ctype)
             depth[combo] = max_depth + 1
+            consec_carry[combo] = best_carry_cnt + (1 if is_carry else 0)
 
         # ------------------------------------------------------------------
         # 7. Compute arrival times at FF sink inputs, then slack
         # ------------------------------------------------------------------
-        required_time = self.clock_period - self.ff_setup_time
+        required_time = self.clock_period - self.ff_setup_time - self.clock_uncertainty
 
         critical_path_delay = 0.0
         wns = float('inf')
@@ -658,7 +755,15 @@ class TimingAnalyzer:
             longest_driver = ''
             for driver in fanin.get(ff, []):
                 driver_at = AT.get(driver, 0.0)
-                arrival = driver_at + _wire_delay_between(driver, ff)
+                # Apply congestion multiplier to the final wire segment
+                d = depth.get(driver, 0)
+                if d > 20:
+                    cong_mult = 1.0 + 0.005 * (d - 20)
+                    cong_mult = min(cong_mult, 1.5)
+                else:
+                    cong_mult = 1.0
+                fo = fanout_map.get((driver, ff), 0)
+                arrival = driver_at + _wire_delay_between(driver, ff, fanout=fo) * cong_mult
                 if arrival > max_arrival_at_d:
                     max_arrival_at_d = arrival
                     longest_driver = driver
@@ -687,7 +792,14 @@ class TimingAnalyzer:
         for ff_src in ff_sources:
             for snk in fanout.get(ff_src, []):
                 if snk in ff_sinks:
-                    wire_d = _wire_delay_between(ff_src, snk)
+                    d = depth.get(ff_src, 0)
+                    if d > 20:
+                        cong_mult = 1.0 + 0.005 * (d - 20)
+                        cong_mult = min(cong_mult, 1.5)
+                    else:
+                        cong_mult = 1.0
+                    fo = fanout_map.get((ff_src, snk), 0)
+                    wire_d = _wire_delay_between(ff_src, snk, fanout=fo) * cong_mult
                     at_d = AT.get(ff_src, self.ff_clk2q_time) + wire_d
                     slack = required_time - at_d
                     endpoint_slacks.append((snk, slack))
@@ -718,6 +830,18 @@ class TimingAnalyzer:
         endpoint_slacks.sort(key=lambda x: x[1])
         num_endpoints = len(endpoint_slacks)
 
+        # Compute fanout stats from physical connectivity
+        all_fanouts = [len(sinks) for sinks in net_in_cells.values()]
+        max_fanout = max(all_fanouts) if all_fanouts else 0
+        avg_fanout = sum(all_fanouts) / len(all_fanouts) if all_fanouts else 0.0
+
+        # Count unidentified cells (in design but not FF or combo)
+        all_cells_in_design = 0
+        for _ in design.getCells():
+            all_cells_in_design += 1
+        n_classified = n_ff_cells + n_combo_cells
+        unidentified = max(0, all_cells_in_design - n_classified)
+
         INFO(f"  [path_timing] DAG: {len(combo_cells)} combos, "
              f"{len(ff_sources)} FF src, {len(ff_sinks)} FF snk, "
              f"{len(sorted_combos)} topo-sorted, "
@@ -738,6 +862,10 @@ class TimingAnalyzer:
             num_violations=num_violations,
             wire_delays={},
             top_violated_nets=endpoint_slacks[:20],
+            cell_type_counts=cell_type_counts,
+            max_fanout=max_fanout,
+            avg_fanout=avg_fanout,
+            unidentified_cells=unidentified,
         )
 
     def ff_overhead_per_stage(self) -> float:
