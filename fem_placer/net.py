@@ -492,7 +492,7 @@ class NetManager:
                 site_conn[inst2][inst1] += logic_increment
 
     def _create_net_tensor(self, valid_net_num, sites_net_list, logic_insts_num):
-        self.net_tensor = torch.zeros(valid_net_num, logic_insts_num, dtype=torch.bool)
+        self.net_tensor = np.zeros((valid_net_num, logic_insts_num), dtype=np.bool_)
 
         for net_idx, sites in enumerate(sites_net_list):
             for site_name in sites:
@@ -681,7 +681,7 @@ class NetManager:
             f.write("Net_IDX\tNet_Name\tConnections\tConnected_Instances\n")
             for net_idx in range(num_nets):
                 if instance_idx < self.net_tensor.shape[1]:
-                    connections = self.net_tensor[net_idx].sum().item()
+                    connections = int(self.net_tensor[net_idx].sum())
                 else:
                     connections = 0
 
@@ -700,7 +700,7 @@ class NetManager:
             f.write("Instance_ID\tConnections\tConnected_Nets\n")
             for instance_idx in range(instance_count):
                 if instance_idx < self.net_tensor.shape[1]:
-                    connections = self.net_tensor[:, instance_idx].sum().item()
+                    connections = int(self.net_tensor[:, instance_idx].sum())
                 else:
                     connections = 0
 

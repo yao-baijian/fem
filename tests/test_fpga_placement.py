@@ -142,7 +142,7 @@ for instance in cfg.instances:
     optimize_time = time.time() - t0
 
     optimal_inds = torch.argwhere(result == result.min()).reshape(-1)
-    legalizer = Legalizer(placer=placer, device=cfg.dev)
+    legalizer = Legalizer(placer=placer, device='cpu')
     router = Router(placer=placer)
     all_ids = placer.get_ids()
     region_id_map = dict(zip(placer.regions, all_ids))

@@ -10,14 +10,16 @@ class Legalizer:
 
     def __init__(self,
                  placer,
-                 device,
+                 device = 'cpu',
                  overlap_solver: str = 'greedy',
                  hungarian_distance_weight: float = 0.1,
                  hungarian_max_empty_sites: Optional[int] = None,
                  enable_importance_based_swapping: bool = False,
-                 fast_first_improvement: bool = True):
+                 fast_first_improvement: bool = True,
+                 hpwl_mode: str = 'cache'):
         self.placer: FpgaPlacer = placer
         self.device = device
+        self.hpwl_mode = hpwl_mode  # 'cache' or 'hpwl'
 
         # Build grids from whatever regions the placer has
         self.grids: Dict[str, Grid] = {}
@@ -32,6 +34,13 @@ class Legalizer:
         self.hungarian_max_empty_sites = hungarian_max_empty_sites
         self.enable_importance_based_swapping = enable_importance_based_swapping
         self.fast_first_improvement = fast_first_improvement
+
+        # ---- Flat NumPy HPWL cache (bypasses NetManager entirely) ----
+        self._pos = None            # np.ndarray [N, 2]  — mutable positions
+        self._inst_to_nets = None   # List[List[int]]    — nets per instance
+        self._net_to_insts = None   # List[List[int]]    — instances per net
+        self._net_tensor = None     # np.ndarray [num_nets, num_insts] bool (hpwl_mode only)
+        self._num_logic = 0         # first N ids are logic
 
     def legalize_placement(self, region_coords: Dict[str, torch.Tensor],
                            region_ids: Dict[str, torch.Tensor]):
@@ -48,6 +57,10 @@ class Legalizer:
         """
         regions = [r for r in region_coords if r in self.grids and r in region_ids]
 
+        # ---- Build the flat NumPy HPWL cache (bypasses NetManager) ----
+        self._build_hpwl_cache(region_coords, region_ids)
+
+        # ---- Stage 1: overlap resolution ----
         INFO(f"Stage 1: solve overlap")
         total_moved = 0
         for r in regions:
@@ -55,37 +68,29 @@ class Legalizer:
             moved = self._resolve_grid_overlaps(self.grids[r], region_coords)
             total_moved += moved
 
-        # Build legalized coords dict
+        # Build legalized coords dict (from grid, not cache — grids are
+        # the ground truth after overlap resolution).
         legalized = {}
         for r in regions:
             n = region_coords[r].shape[0]
             legalized[r] = self.grids[r].to_coords_tensor(n)
 
-        # HPWL before / after
-        all_coords_before = [region_coords[r] for r in regions]
-        all_coords_after = [legalized[r] for r in regions]
-        hpwl_before = self.placer.net_manager.analyze_solver_hpwl(*all_coords_before)
-        hpwl_after  = self.placer.net_manager.analyze_solver_hpwl(*all_coords_after)
-        moved_str = ' + '.join(f"{r}: {m}" for r, m in zip(regions, [0]*len(regions)))
+        # HPWL before / after (via cache)
+        hpwl_before = self._cache_total_hpwl()
+        self._sync_cache_from_legalized(legalized, region_ids)
+        hpwl_after = self._cache_total_hpwl()
         INFO(f"Hpwl {hpwl_before:.2f} -> {hpwl_after:.2f}, moved {total_moved} instances")
 
+        # ---- Stage 2: global optimization (cache-driven) ----
         INFO(f"Stage 2: global optimization")
         optimized = self._global_optimization(legalized, region_ids, iteration=3)
-        all_coords_opt = [optimized[r] for r in regions]
-        hpwl_opt = self.placer.net_manager.analyze_solver_hpwl(*all_coords_opt)
+        hpwl_opt = self._cache_total_hpwl()
         INFO(f"Optimized Hpwl {hpwl_opt:.2f}, improve {hpwl_opt - hpwl_after:.2f}")
 
+        # ---- Sync cache back to tensors ----
+        optimized = self._sync_cache_to_region_coords(optimized, region_ids)
+
         return optimized, total_moved, hpwl_before, hpwl_opt
-
-    # ------------------------------------------------------------------
-    # Internal helpers — accept region_coords dict, extract logic/io for
-    # the net manager calls (which still use the legacy signature).
-    # ------------------------------------------------------------------
-
-    def _logic_io_from(self, region_coords):
-        return (region_coords.get('logic'),
-                region_coords.get('io'),
-                'io' in region_coords)
 
     def _load_coords_to_grids(self, grid: Grid, coords: torch.Tensor, ids: torch.Tensor):
         grid.clear_all()
@@ -93,10 +98,8 @@ class Legalizer:
         INFO(f"Loaded {len(ids)} instance to grid")
 
     def _resolve_grid_overlaps(self, grid: Grid, region_coords: Dict[str, torch.Tensor]) -> int:
-        lc, ioc, inc_io = self._logic_io_from(region_coords)
-
         if self.overlap_solver == 'hungarian':
-            return self._resolve_grid_overlaps_hungarian(grid, lc, ioc, inc_io)
+            return self._resolve_grid_overlaps_hungarian(grid)
 
         moved_count = 0
         conflict_groups = self._collect_conflict_groups(grid)
@@ -106,7 +109,7 @@ class Legalizer:
             if len(conflict_instances) <= 1:
                 continue
             success, num_moved = self._resolve_conflict_in_grid(
-                grid, conflict_pos, conflict_instances, lc, ioc, inc_io
+                grid, conflict_pos, conflict_instances
             )
             if success:
                 moved_count += num_moved
@@ -126,7 +129,7 @@ class Legalizer:
                 conflict_groups[pos_tuple] = [instance_id]
         return {pos: insts for pos, insts in conflict_groups.items() if len(insts) > 1}
 
-    def _resolve_grid_overlaps_hungarian(self, grid, logic_coords, io_coords, include_io):
+    def _resolve_grid_overlaps_hungarian(self, grid):
         conflict_groups = self._collect_conflict_groups(grid)
         if not conflict_groups:
             return 0
@@ -156,10 +159,10 @@ class Legalizer:
             if cp is None:
                 cost_matrix[i, :] = 1e6
                 continue
-            cur = self.placer.net_manager.compute_instance_move_hpwl(inst_id, logic_coords, io_coords, include_io)
-            cand = self.placer.net_manager.compute_instance_move_hpwl_batch(inst_id, logic_coords, io_coords, include_io, candidate_xy)
+            # _cache_delta_move_batch returns [new - old for each candidate]
+            cand = self._cache_delta_move_batch(inst_id, candidate_xy)
             pen = np.array([abs(cx-cp[0])+abs(cy-cp[1]) for cx,cy in candidate_xy], dtype=np.float32) * self.hungarian_distance_weight
-            cost_matrix[i, :] = (np.asarray(cand, dtype=np.float32) - float(cur)) + pen
+            cost_matrix[i, :] = np.asarray(cand, dtype=np.float32) + pen
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         moved = 0
         for ri, ci in zip(row_ind, col_ind):
@@ -170,6 +173,7 @@ class Legalizer:
                 continue
             ok, _, _ = grid.move_instance(inst_id, tx, ty, swap_allowed=False)
             if ok:
+                self._cache_apply_move(inst_id, tx, ty)
                 moved += 1
         rem = self._check_remaining_overlaps(grid)
         if rem > 0:
@@ -186,8 +190,7 @@ class Legalizer:
             INFO(f" remain overlapped: {rem}")
         return len(rem)
 
-    def _resolve_conflict_in_grid(self, grid, conflict_pos, conflict_instances,
-                                  logic_coords, io_coords, include_io):
+    def _resolve_conflict_in_grid(self, grid, conflict_pos, conflict_instances):
         cx, cy = conflict_pos
         needed = len(conflict_instances) + 1
         empty = grid.find_empty_positions_nearby(cx, cy, needed)
@@ -200,11 +203,11 @@ class Legalizer:
         cand_xy = [(x, y) for x, y, _ in cand_pos]
         cost = torch.zeros((m, n_max), device=self.device)
         for i, inst_id in enumerate(conflict_instances):
-            cur = self.placer.net_manager.compute_instance_move_hpwl(inst_id, logic_coords, io_coords, include_io)
-            hpwl_c = self.placer.net_manager.compute_instance_move_hpwl_batch(inst_id, logic_coords, io_coords, include_io, cand_xy)
+            # delta = HPWL_after - HPWL_before for each candidate
+            deltas = self._cache_delta_move_batch(inst_id, cand_xy)
             for j in range(n_max):
                 _, _, dist = cand_pos[j]
-                cost[i, j] = (hpwl_c[j] - cur) + dist * 0.1
+                cost[i, j] = float(deltas[j]) + dist * 0.1
         asgn = self._greedy_assignment(cost)
         moved = 0
         for i, j in enumerate(asgn):
@@ -216,6 +219,7 @@ class Legalizer:
             if cp and (cp[0]!=tx or cp[1]!=ty):
                 ok, _, _ = grid.move_instance(inst_id, tx, ty, swap_allowed=True)
                 if ok:
+                    self._cache_apply_move(inst_id, tx, ty)
                     moved += 1
         return True, moved
 
@@ -235,16 +239,396 @@ class Legalizer:
                 assigned_positions.add(best_j)
         return assignment
 
+    # ==================================================================
+    #  Flat NumPy HPWL cache — bypasses NetManager entirely
+    # ==================================================================
+
+    def _build_hpwl_cache(self,
+                          region_coords: Dict[str, torch.Tensor],
+                          region_ids: Dict[str, torch.Tensor]):
+        """Extract lightweight NumPy copies of all data needed for
+        delta-HPWL computation, so the tight legalizer loops never touch
+        ``NetManager`` or PyTorch tensors.
+
+        Populates ``self._pos``, ``self._inst_to_nets``,
+        ``self._net_to_insts``.
+        """
+        nm = self.placer.net_manager
+
+        # ---- net name → integer id ----
+        net_names = list(nm.net_to_sites.keys())
+        net_name_to_id = {name: i for i, name in enumerate(net_names)}
+        num_nets = len(net_names)
+
+        # ---- total instance count (max id + 1) ----
+        max_id = 0
+        for ids in region_ids.values():
+            t = ids if not torch.is_tensor(ids) else ids.cpu()
+            if len(t):
+                max_id = max(max_id, int(t.max().item()))
+        num_insts = max_id + 1
+
+        # ---- initial positions  [num_insts, 2] ----
+        pos = np.full((num_insts, 2), np.nan, dtype=np.float64)
+        for r in region_coords:
+            coords_np = region_coords[r].cpu().numpy()
+            ids_np = region_ids[r].cpu().numpy()
+            for inst_id, (x, y) in zip(ids_np, coords_np):
+                inst_id = int(inst_id)
+                if inst_id < num_insts:
+                    pos[inst_id] = [float(x), float(y)]
+
+        # ---- instance → nets  &  net → instances ----
+        inst_to_nets: List[List[int]] = [[] for _ in range(num_insts)]
+        net_to_insts: List[List[int]] = [[] for _ in range(num_nets)]
+
+        for net_name, sites in nm.net_to_sites.items():
+            net_id = net_name_to_id.get(net_name)
+            if net_id is None:
+                continue
+            for site in sites:
+                inst_id = nm.get_site_inst_id_by_name_func(site)
+                if inst_id is not None and 0 <= inst_id < num_insts:
+                    inst_to_nets[inst_id].append(net_id)
+                    net_to_insts[net_id].append(inst_id)
+
+        # Purge nets with < 2 instances (they contribute zero HPWL)
+        for net_id in range(num_nets):
+            if len(net_to_insts[net_id]) < 2:
+                net_to_insts[net_id] = []
+                for inst_list in inst_to_nets:
+                    try:
+                        inst_list.remove(net_id)
+                    except ValueError:
+                        pass
+
+        self._pos = pos
+        self._inst_to_nets = inst_to_nets
+        self._net_to_insts = net_to_insts
+        self._num_logic = region_coords.get('logic', torch.empty(0)).shape[0]
+
+        # hpwl_mode: store reference to NumPy net_tensor for connectivity queries
+        if self.hpwl_mode == 'hpwl':
+            self._net_tensor = nm.net_tensor
+        else:
+            self._net_tensor = None
+
+    # ------------------------------------------------------------------
+    #  Pure-Python / NumPy delta helpers (no PyTorch, no NetManager)
+    # ------------------------------------------------------------------
+
+    def _cache_net_hpwl(self, net_id: int) -> float:
+        """HPWL of a single net from the current cache positions."""
+        insts = self._net_to_insts[net_id]
+        n = len(insts)
+        if n < 2:
+            return 0.0
+        xs = self._pos[insts, 0]   # NumPy fancy indexing
+        ys = self._pos[insts, 1]
+        return float((xs.max() - xs.min()) + (ys.max() - ys.min()))
+
+    def _cache_delta_move(self, inst_id: int,
+                          new_x: float, new_y: float) -> float:
+        """Delta HPWL = HPWL_after − HPWL_before for moving *inst_id*
+        to ``(new_x, new_y)``.  Negative means improvement."""
+        if self.hpwl_mode == 'hpwl':
+            return self._hpwl_delta_move(inst_id, new_x, new_y)
+
+        delta = 0.0
+
+        for net_id in self._inst_to_nets[inst_id]:
+            insts = self._net_to_insts[net_id]
+            if len(insts) < 2:
+                continue
+
+            # Old HPWL
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+
+            # New HPWL — replace inst_id's coords
+            idx = insts.index(inst_id)
+            xs_new = xs.copy()
+            ys_new = ys.copy()
+            xs_new[idx] = new_x
+            ys_new[idx] = new_y
+            new_hpwl = (xs_new.max() - xs_new.min()) + (ys_new.max() - ys_new.min())
+
+            delta += new_hpwl - old_hpwl
+
+        return delta
+
+    def _cache_delta_move_batch(self, inst_id: int,
+                                candidates: List[Tuple[float, float]]) -> np.ndarray:
+        """Delta HPWL for *inst_id* at each candidate position.
+        Returns ``np.ndarray [len(candidates)]``."""
+        if self.hpwl_mode == 'hpwl':
+            return self._hpwl_delta_move_batch(inst_id, candidates)
+
+        n_cand = len(candidates)
+        if n_cand == 0:
+            return np.array([], dtype=np.float64)
+
+        deltas = np.zeros(n_cand, dtype=np.float64)
+
+        for net_id in self._inst_to_nets[inst_id]:
+            insts = self._net_to_insts[net_id]
+            if len(insts) < 2:
+                continue
+
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+
+            idx = insts.index(inst_id)
+            # Vectorised over candidates
+            for c, (nx, ny) in enumerate(candidates):
+                xc, yc = xs.copy(), ys.copy()
+                xc[idx] = nx
+                yc[idx] = ny
+                new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+                deltas[c] += new_hpwl - old_hpwl
+
+        return deltas
+
+    def _cache_delta_swap(self, a: int, b: int) -> float:
+        """Delta HPWL for swapping instances *a* and *b*.
+        Correctly handles nets that contain both instances."""
+        if self.hpwl_mode == 'hpwl':
+            return self._hpwl_delta_swap(a, b)
+
+        ax, ay = self._pos[a]
+        bx, by = self._pos[b]
+
+        nets_a = set(self._inst_to_nets[a])
+        nets_b = set(self._inst_to_nets[b])
+
+        only_a = nets_a - nets_b
+        only_b = nets_b - nets_a
+        both   = nets_a & nets_b
+
+        delta = 0.0
+
+        # ---- nets only on a: a moves to b's position ----
+        for net_id in only_a:
+            insts = self._net_to_insts[net_id]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = insts.index(a)
+            xc, yc = xs.copy(), ys.copy()
+            xc[idx] = bx
+            yc[idx] = by
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+
+        # ---- nets only on b: b moves to a's position ----
+        for net_id in only_b:
+            insts = self._net_to_insts[net_id]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = insts.index(b)
+            xc, yc = xs.copy(), ys.copy()
+            xc[idx] = ax
+            yc[idx] = ay
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+
+        # ---- nets containing both: simultaneous swap ----
+        for net_id in both:
+            insts = self._net_to_insts[net_id]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+
+            xc, yc = xs.copy(), ys.copy()
+            idx_a = insts.index(a)
+            idx_b = insts.index(b)
+            xc[idx_a], yc[idx_a] = bx, by
+            xc[idx_b], yc[idx_b] = ax, ay
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+
+        return delta
+
+    # ------------------------------------------------------------------
+    #  Cache mutation helpers (call after every accepted move / swap)
+    # ------------------------------------------------------------------
+
+    def _cache_apply_move(self, inst_id: int, nx: float, ny: float):
+        self._pos[inst_id] = [nx, ny]
+
+    def _cache_apply_swap(self, a: int, b: int):
+        pa = self._pos[a].copy()
+        pb = self._pos[b].copy()
+        self._pos[a] = pb
+        self._pos[b] = pa
+
+    # ------------------------------------------------------------------
+    #  hpwl_mode helpers — use net_tensor (NumPy bool matrix) for
+    #  connectivity lookup instead of the cache's list-of-lists.
+    #  Mimics the original NetManager query style.
+    # ------------------------------------------------------------------
+
+    def _hpwl_delta_move(self, inst_id: int,
+                         new_x: float, new_y: float) -> float:
+        delta = 0.0
+        nt = self._net_tensor
+        if nt is None:
+            return delta
+        # All nets connected to this instance
+        net_ids = np.where(nt[:, inst_id])[0]
+        for net_id in net_ids:
+            insts = np.where(nt[net_id])[0]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = int(np.where(insts == inst_id)[0][0])
+            xc, yc = xs.copy(), ys.copy()
+            xc[idx] = new_x
+            yc[idx] = new_y
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+        return delta
+
+    def _hpwl_delta_move_batch(self, inst_id: int,
+                                candidates: List[Tuple[float, float]]) -> np.ndarray:
+        n_cand = len(candidates)
+        if n_cand == 0:
+            return np.array([], dtype=np.float64)
+        deltas = np.zeros(n_cand, dtype=np.float64)
+        nt = self._net_tensor
+        if nt is None:
+            return deltas
+        net_ids = np.where(nt[:, inst_id])[0]
+        for net_id in net_ids:
+            insts = np.where(nt[net_id])[0]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = int(np.where(insts == inst_id)[0][0])
+            for c, (nx, ny) in enumerate(candidates):
+                xc, yc = xs.copy(), ys.copy()
+                xc[idx] = nx
+                yc[idx] = ny
+                new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+                deltas[c] += new_hpwl - old_hpwl
+        return deltas
+
+    def _hpwl_delta_swap(self, a: int, b: int) -> float:
+        nt = self._net_tensor
+        if nt is None:
+            return 0.0
+        ax, ay = self._pos[a]
+        bx, by = self._pos[b]
+        nets_a = set(np.where(nt[:, a])[0].tolist())
+        nets_b = set(np.where(nt[:, b])[0].tolist())
+        only_a = nets_a - nets_b
+        only_b = nets_b - nets_a
+        both   = nets_a & nets_b
+        delta = 0.0
+        for net_id in only_a:
+            insts = np.where(nt[net_id])[0]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = int(np.where(insts == a)[0][0])
+            xc, yc = xs.copy(), ys.copy()
+            xc[idx] = bx; yc[idx] = by
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+        for net_id in only_b:
+            insts = np.where(nt[net_id])[0]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            idx = int(np.where(insts == b)[0][0])
+            xc, yc = xs.copy(), ys.copy()
+            xc[idx] = ax; yc[idx] = ay
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+        for net_id in both:
+            insts = np.where(nt[net_id])[0]
+            if len(insts) < 2:
+                continue
+            xs = self._pos[insts, 0]
+            ys = self._pos[insts, 1]
+            old_hpwl = (xs.max() - xs.min()) + (ys.max() - ys.min())
+            xc, yc = xs.copy(), ys.copy()
+            idx_a = int(np.where(insts == a)[0][0])
+            idx_b = int(np.where(insts == b)[0][0])
+            xc[idx_a] = bx; yc[idx_a] = by
+            xc[idx_b] = ax; yc[idx_b] = ay
+            new_hpwl = (xc.max() - xc.min()) + (yc.max() - yc.min())
+            delta += new_hpwl - old_hpwl
+        return delta
+
+    # ------------------------------------------------------------------
+    #  Sync back to tensors once legalization is done
+    # ------------------------------------------------------------------
+
+    def _sync_cache_to_region_coords(
+            self,
+            region_coords: Dict[str, torch.Tensor],
+            region_ids: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Overwrite tensors with final cache positions and return the
+        updated dict."""
+        for r in region_coords:
+            ids_np = region_ids[r].cpu().numpy()
+            out = torch.zeros_like(region_coords[r])
+            for i, inst_id in enumerate(ids_np):
+                inst_id = int(inst_id)
+                out[i, 0] = float(self._pos[inst_id, 0])
+                out[i, 1] = float(self._pos[inst_id, 1])
+            region_coords[r] = out
+        return region_coords
+
+    def _cache_total_hpwl(self) -> float:
+        """Total HPWL over all nets from the current cache positions."""
+        total = 0.0
+        for net_id in range(len(self._net_to_insts)):
+            total += self._cache_net_hpwl(net_id)
+        return total
+
+    def _sync_cache_from_legalized(
+            self,
+            legalized: Dict[str, torch.Tensor],
+            region_ids: Dict[str, torch.Tensor]):
+        """Update the cache positions from the legalized grid tensors
+        (used after Stage 1 overlap resolution)."""
+        for r in legalized:
+            coords_np = legalized[r].cpu().numpy()
+            ids_np = region_ids[r].cpu().numpy()
+            for inst_id, (x, y) in zip(ids_np, coords_np):
+                inst_id = int(inst_id)
+                if inst_id < self._pos.shape[0]:
+                    self._pos[inst_id] = [float(x), float(y)]
+
     def _global_optimization(self, legalized: Dict[str, torch.Tensor],
                              region_ids: Dict[str, torch.Tensor],
                              iteration: int = 3) -> Dict[str, torch.Tensor]:
-        lc, ioc, inc_io = self._logic_io_from(legalized)
         for _ in range(iteration):
             improved = False
             for r in legalized:
                 if r in self.grids:
                     ok = self._optimize_grid_instances(
-                        self.grids[r], legalized[r].shape[0], lc, ioc, inc_io
+                        self.grids[r], legalized[r].shape[0]
                     )
                     if ok:
                         improved = True
@@ -256,16 +640,15 @@ class Legalizer:
                 optimized[r] = self.grids[r].to_coords_tensor(legalized[r].shape[0])
         return optimized
 
-    def _optimize_grid_instances(self, grid: Grid, num_instances: int,
-                                logic_coords, io_coords, include_io) -> bool:
+    def _optimize_grid_instances(self, grid: Grid, num_instances: int) -> bool:
         improved = False
         if self.enable_importance_based_swapping:
             critical_instances = self._select_critical_instances_for_grid(
-                grid, num_instances, logic_coords, io_coords, include_io
+                grid, num_instances
             )
             for instance_id in critical_instances:
                 success, improvement = self._optimize_instance_in_grid_importance_aware(
-                    grid, instance_id, logic_coords, io_coords, include_io
+                    grid, instance_id
                 )
                 if success and improvement > 0:
                     improved = True
@@ -273,7 +656,7 @@ class Legalizer:
             # 快速贪心优化（速度快）
             for instance_id in list(grid.instance_positions.keys())[:num_instances]:
                 success, improvement = self._optimize_instance_in_grid_fast(
-                    grid, instance_id, logic_coords, io_coords, include_io
+                    grid, instance_id
                 )
                 if success and improvement > 0:
                     improved = True
@@ -283,15 +666,18 @@ class Legalizer:
         return improved
 
     def _compute_instance_connectivity(self, instance_id: int) -> float:
-        """计算实例的连接度得分"""
-        net_tensor = self.placer.net_manager.net_tensor
-        if net_tensor is None or instance_id >= net_tensor.shape[1]:
-            return 0.0
-        return net_tensor[:, instance_id].sum().item()
+        """Return the net-degree (connectivity) score for *instance_id*.
 
-    def _select_critical_instances_for_grid(self, grid: Grid, num_instances: int,
-                                           logic_coords: torch.Tensor, io_coords: Optional[torch.Tensor],
-                                           include_io: bool) -> List[int]:
+        Uses ``self._net_tensor`` (hpwl_mode) or falls back to
+        ``NetManager.net_tensor`` (both NumPy)."""
+        nt = self._net_tensor
+        if nt is None:
+            nt = self.placer.net_manager.net_tensor
+        if nt is None or instance_id >= nt.shape[1]:
+            return 0.0
+        return float(nt[:, instance_id].sum())
+
+    def _select_critical_instances_for_grid(self, grid: Grid, num_instances: int) -> List[int]:
         """为指定网格选择关键实例 (top 20% by connectivity)"""
         # 如果网格中没有实例，返回空列表
         if not grid.instance_positions:
@@ -317,23 +703,13 @@ class Legalizer:
         
         return [inst_id for _, inst_id in connectivity_scores[:top_k]]
 
-    def _optimize_instance_in_grid_fast(self, grid: Grid, instance_id: int,
-                                       logic_coords: torch.Tensor, io_coords: Optional[torch.Tensor],
-                                       include_io: bool) -> Tuple[bool, float]:
-        """快速贪心优化: 仅考虑邻域空位, 不做交换(批量HPWL评估)"""
+    def _optimize_instance_in_grid_fast(self, grid: Grid, instance_id: int) -> Tuple[bool, float]:
+        """快速贪心优化: 仅考虑邻域空位, 不做交换 (使用NumPy cache)"""
         current_pos = grid.get_instance_position(instance_id)
         if not current_pos:
             return False, 0.0
 
-        # 获取当前位置的HPWL
-        current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-            instance_id, logic_coords, io_coords, include_io
-        )
-
-        best_pos = current_pos
-        best_hpwl = current_hpwl
-
-        # 根据网格类型设置搜索半径
+        cx, cy = current_pos
         search_radius = 2 if grid.name == 'logic' else 1
 
         # 搜索邻域并收集空位候选
@@ -342,157 +718,106 @@ class Legalizer:
             for dy in range(-search_radius, search_radius + 1):
                 if dx == 0 and dy == 0:
                     continue
-
-                new_x, new_y = current_pos[0] + dx, current_pos[1] + dy
-
+                new_x, new_y = cx + dx, cy + dy
                 if not grid.is_within_bounds(new_x, new_y):
                     continue
-
                 if grid.is_position_empty(new_x, new_y):
                     candidate_xy.append((new_x, new_y))
 
         if not candidate_xy:
             return False, 0.0
 
-        hpwl_candidates = self.placer.net_manager.compute_instance_move_hpwl_batch(
-            instance_id,
-            logic_coords,
-            io_coords,
-            include_io,
-            candidate_xy,
-        )
+        # Batch compute deltas via cache (pure NumPy, no NetManager)
+        deltas = self._cache_delta_move_batch(instance_id, candidate_xy)
+        best_idx = int(np.argmin(deltas))
+        best_delta = deltas[best_idx]
 
-        if not hpwl_candidates:
-            return False, 0.0
-
-        hpwl_candidates_np = np.asarray(hpwl_candidates, dtype=np.float32)
-        best_idx = int(np.argmin(hpwl_candidates_np))
-        best_hpwl = float(hpwl_candidates_np[best_idx])
-        best_pos = candidate_xy[best_idx]
-
-        # 如果找到更好的位置
-        if best_hpwl < current_hpwl and best_pos != current_pos:
-            improvement = current_hpwl - best_hpwl
-            success, _, _ = grid.move_instance(
-                instance_id, best_pos[0], best_pos[1], swap_allowed=False
-            )
-            return success, improvement
+        if best_delta < 0:  # negative = improvement
+            tx, ty = candidate_xy[best_idx]
+            improvement = -best_delta
+            success, _, _ = grid.move_instance(instance_id, tx, ty, swap_allowed=False)
+            if success:
+                self._cache_apply_move(instance_id, tx, ty)
+                return success, improvement
 
         return False, 0.0
 
-    def _optimize_instance_in_grid_importance_aware(self, grid: Grid, instance_id: int,
-                                  logic_coords: torch.Tensor, io_coords: Optional[torch.Tensor],
-                                  include_io: bool) -> Tuple[bool, float]:
-        """重要性感知优化：支持与非关键实例交换
-        
-        策略：
-        1. 优先查找并移到空位
-        2. 其次考虑与低重要性实例交换
-        3. 只在总HPWL改进时执行交换
+    def _optimize_instance_in_grid_importance_aware(self, grid: Grid,
+                                                    instance_id: int) -> Tuple[bool, float]:
+        """Importance-aware optimization using NumPy cache (no NetManager).
+
+        Strategy:
+        1. Prefer empty slots.
+        2. Consider swaps with lower-connectivity instances.
+        3. Only execute when total HPWL improves.
         """
         current_pos = grid.get_instance_position(instance_id)
         if not current_pos:
             return False, 0.0
 
-        # 获取当前位置的HPWL
-        current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-            instance_id, logic_coords, io_coords, include_io
-        )
-
+        cx, cy = current_pos
         best_pos = current_pos
-        best_hpwl = current_hpwl
-        best_swap_candidate = None
         best_improvement = 0.0
+        best_swap_candidate = None
 
-        # 获取该实例的连接度
+        # Connectivity for pruning
         instance_connectivity = self._compute_instance_connectivity(instance_id)
-
-        # 根据网格类型设置搜索半径 (Manhattan distance)
         search_radius = 3 if grid.name == 'logic' else 1
 
-        # 收集邻域内的所有位置（空位或其他实例），并立即按连接度过滤占用位
+        # Collect neighbours: empty positions and lower-connectivity occupied
         empty_positions: List[Tuple[int, int]] = []
-        occupied_positions: List[Tuple[int, int, int]] = []  # (x, y, swap_instance_id)
+        occupied_positions: List[Tuple[int, int, int]] = []  # (x, y, swap_id)
+
         for dx in range(-search_radius, search_radius + 1):
             for dy in range(-search_radius, search_radius + 1):
                 if dx == 0 and dy == 0:
                     continue
-
-                # 使用Manhattan距离判断
                 if abs(dx) + abs(dy) > search_radius:
                     continue
 
-                new_x, new_y = current_pos[0] + dx, current_pos[1] + dy
-
-                if not grid.is_within_bounds(new_x, new_y):
+                nx, ny = cx + dx, cy + dy
+                if not grid.is_within_bounds(nx, ny):
                     continue
 
-                occupants = grid.get_position_occupants(new_x, new_y)
+                occupants = grid.get_position_occupants(nx, ny)
                 if not occupants:
-                    empty_positions.append((new_x, new_y))
+                    empty_positions.append((nx, ny))
                 elif occupants[0] != instance_id:
-                    # Prune: filter out higher-connectivity instances BEFORE any HPWL calculation
-                    swap_connectivity = self._compute_instance_connectivity(occupants[0])
-                    if swap_connectivity < instance_connectivity:
-                        occupied_positions.append((new_x, new_y, occupants[0]))
+                    swap_conn = self._compute_instance_connectivity(occupants[0])
+                    if swap_conn < instance_connectivity:
+                        occupied_positions.append((nx, ny, occupants[0]))
 
-        # ---- Batch evaluate empty positions ----
+        # ---- Evaluate empty slots (batch) ----
         if empty_positions:
-            hpwl_empty_candidates = self.placer.net_manager.compute_instance_move_hpwl_batch(
-                instance_id, logic_coords, io_coords, include_io, empty_positions
-            )
-            for (new_x, new_y), new_hpwl in zip(empty_positions, hpwl_empty_candidates):
-                improvement = current_hpwl - new_hpwl
-                if improvement > best_improvement:
-                    best_improvement = improvement
-                    best_hpwl = new_hpwl
-                    best_pos = (new_x, new_y)
+            deltas = self._cache_delta_move_batch(instance_id, empty_positions)
+            for (nx, ny), d in zip(empty_positions, deltas):
+                imp = -d  # delta = new - old, so -delta = improvement
+                if imp > best_improvement:
+                    best_improvement = imp
+                    best_pos = (nx, ny)
                     best_swap_candidate = None
 
-        # ---- Batch evaluate occupied positions (swap candidates) ----
-        if occupied_positions:
-            swap_coords = [(x, y) for x, y, _ in occupied_positions]
-            # Batch evaluate the moving instance at all swap candidate positions
-            instance_at_swap_hpwls = self.placer.net_manager.compute_instance_move_hpwl_batch(
-                instance_id, logic_coords, io_coords, include_io, swap_coords
-            )
-            for (new_x, new_y, swap_id), inst_new_hpwl in zip(occupied_positions, instance_at_swap_hpwls):
-                # Get the swap instance's current HPWL
-                swap_current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                    swap_id, logic_coords, io_coords, include_io
-                )
-                # Evaluate the swap instance at the moving instance's current position
-                swap_new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                    swap_id,
-                    logic_coords,
-                    io_coords,
-                    include_io,
-                    candidate_pos=current_pos,
-                )
-                total_hpwl_after_swap = inst_new_hpwl + swap_new_hpwl
-                total_hpwl_before_swap = current_hpwl + swap_current_hpwl
-                improvement = total_hpwl_before_swap - total_hpwl_after_swap
-                if improvement > best_improvement:
-                    best_improvement = improvement
-                    best_hpwl = inst_new_hpwl
-                    best_pos = (new_x, new_y)
-                    best_swap_candidate = swap_id
+        # ---- Evaluate swap candidates (batch via _cache_delta_swap) ----
+        for nx, ny, swap_id in occupied_positions:
+            d = self._cache_delta_swap(instance_id, swap_id)  # delta = after - before
+            imp = -d
+            if imp > best_improvement:
+                best_improvement = imp
+                best_pos = (nx, ny)
+                best_swap_candidate = swap_id
 
-        # 如果找到更好的位置或交换
+        # ---- Apply best move / swap ----
         if best_improvement > 0 and best_pos != current_pos:
+            tx, ty = best_pos
             if best_swap_candidate is not None:
-                # 执行交换
-                success, _, _ = grid.move_instance(
-                    instance_id, best_pos[0], best_pos[1], swap_allowed=True
-                )
+                success, _, _ = grid.move_instance(instance_id, tx, ty, swap_allowed=True)
                 if success:
-                    return success, best_improvement
+                    self._cache_apply_swap(instance_id, best_swap_candidate)
+                    return True, best_improvement
             else:
-                # 仅移动到空位
-                success, _, _ = grid.move_instance(
-                    instance_id, best_pos[0], best_pos[1], swap_allowed=False
-                )
+                success, _, _ = grid.move_instance(instance_id, tx, ty, swap_allowed=False)
                 if success:
-                    return success, best_improvement
+                    self._cache_apply_move(instance_id, tx, ty)
+                    return True, best_improvement
 
         return False, 0.0
