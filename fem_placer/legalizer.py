@@ -410,8 +410,9 @@ class Legalizer:
         # 根据网格类型设置搜索半径 (Manhattan distance)
         search_radius = 3 if grid.name == 'logic' else 1
 
-        # 收集邻域内的所有位置（空位或其他实例）
-        neighbor_positions = []
+        # 收集邻域内的所有位置（空位或其他实例），并立即按连接度过滤占用位
+        empty_positions: List[Tuple[int, int]] = []
+        occupied_positions: List[Tuple[int, int, int]] = []  # (x, y, swap_instance_id)
         for dx in range(-search_radius, search_radius + 1):
             for dy in range(-search_radius, search_radius + 1):
                 if dx == 0 and dy == 0:
@@ -426,80 +427,56 @@ class Legalizer:
                 if not grid.is_within_bounds(new_x, new_y):
                     continue
 
-                neighbor_positions.append((new_x, new_y))
+                occupants = grid.get_position_occupants(new_x, new_y)
+                if not occupants:
+                    empty_positions.append((new_x, new_y))
+                elif occupants[0] != instance_id:
+                    # Prune: filter out higher-connectivity instances BEFORE any HPWL calculation
+                    swap_connectivity = self._compute_instance_connectivity(occupants[0])
+                    if swap_connectivity < instance_connectivity:
+                        occupied_positions.append((new_x, new_y, occupants[0]))
 
-        # 首先评估所有邻域位置中的空位（优先级高）
-        empty_positions = []
-        occupied_positions = []
-        
-        for new_x, new_y in neighbor_positions:
-            occupants = grid.get_position_occupants(new_x, new_y)
-            if not occupants:
-                empty_positions.append((new_x, new_y))
-            elif occupants[0] != instance_id:
-                occupied_positions.append((new_x, new_y, occupants[0]))
-
-        # 评估空位（优先级最高）
-        for new_x, new_y in empty_positions:
-            new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                instance_id,
-                logic_coords,
-                io_coords,
-                include_io,
-                candidate_pos=(new_x, new_y)
+        # ---- Batch evaluate empty positions ----
+        if empty_positions:
+            hpwl_empty_candidates = self.placer.net_manager.compute_instance_move_hpwl_batch(
+                instance_id, logic_coords, io_coords, include_io, empty_positions
             )
-
-            improvement = current_hpwl - new_hpwl
-            if improvement > best_improvement:
-                best_improvement = improvement
-                best_hpwl = new_hpwl
-                best_pos = (new_x, new_y)
-                best_swap_candidate = None
-
-        # 如果没有找到改进的空位，才考虑交换（只与非关键实例）
-        if best_swap_candidate is None and best_improvement <= 0:
-            for new_x, new_y, swap_instance_id in occupied_positions:
-                # 只考虑与低重要性实例的交换
-                swap_connectivity = self._compute_instance_connectivity(swap_instance_id)
-                
-                # 交换的实例不能是关键实例（连接度不能更高）
-                if swap_connectivity >= instance_connectivity:
-                    continue
-
-                # 计算交换后的HPWL变化
-                swap_current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                    swap_instance_id, logic_coords, io_coords, include_io
-                )
-                
-                # 当前实例移到新位置
-                instance_new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                    instance_id,
-                    logic_coords,
-                    io_coords,
-                    include_io,
-                    candidate_pos=(new_x, new_y)
-                )
-                
-                # 交换的实例移到当前位置
-                swap_new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
-                    swap_instance_id,
-                    logic_coords,
-                    io_coords,
-                    include_io,
-                    candidate_pos=current_pos
-                )
-                
-                # 总的HPWL变化
-                total_hpwl_after_swap = instance_new_hpwl + swap_new_hpwl
-                total_hpwl_before_swap = current_hpwl + swap_current_hpwl
-                improvement = total_hpwl_before_swap - total_hpwl_after_swap
-                
-                # 如果交换能改进且改进最好，记录
+            for (new_x, new_y), new_hpwl in zip(empty_positions, hpwl_empty_candidates):
+                improvement = current_hpwl - new_hpwl
                 if improvement > best_improvement:
                     best_improvement = improvement
-                    best_hpwl = instance_new_hpwl
+                    best_hpwl = new_hpwl
                     best_pos = (new_x, new_y)
-                    best_swap_candidate = swap_instance_id
+                    best_swap_candidate = None
+
+        # ---- Batch evaluate occupied positions (swap candidates) ----
+        if occupied_positions:
+            swap_coords = [(x, y) for x, y, _ in occupied_positions]
+            # Batch evaluate the moving instance at all swap candidate positions
+            instance_at_swap_hpwls = self.placer.net_manager.compute_instance_move_hpwl_batch(
+                instance_id, logic_coords, io_coords, include_io, swap_coords
+            )
+            for (new_x, new_y, swap_id), inst_new_hpwl in zip(occupied_positions, instance_at_swap_hpwls):
+                # Get the swap instance's current HPWL
+                swap_current_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
+                    swap_id, logic_coords, io_coords, include_io
+                )
+                # Evaluate the swap instance at the moving instance's current position
+                swap_new_hpwl = self.placer.net_manager.compute_instance_move_hpwl(
+                    swap_id,
+                    logic_coords,
+                    io_coords,
+                    include_io,
+                    candidate_pos=current_pos,
+                )
+                total_hpwl_after_swap = inst_new_hpwl + swap_new_hpwl
+                total_hpwl_before_swap = current_hpwl + swap_current_hpwl
+                improvement = total_hpwl_before_swap - total_hpwl_after_swap
+                if improvement > best_improvement:
+                    best_improvement = improvement
+                    best_hpwl = inst_new_hpwl
+                    best_pos = (new_x, new_y)
+                    best_swap_candidate = swap_id
 
         # 如果找到更好的位置或交换
         if best_improvement > 0 and best_pos != current_pos:

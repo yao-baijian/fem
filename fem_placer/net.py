@@ -434,13 +434,15 @@ class NetManager:
             denom_io = float(len(logic_inst_list) + len(io_inst_list) + offset_coeff)
             denom_logic = float(len(logic_inst_list) + offset_coeff)
 
+            # Pre-calculate instance weights into a lookup dictionary
+            weight_cache = {}
+            all_names = set(logic_inst_list) | set(io_inst_list)
+            for name in all_names:
+                degree_weight = len(self.site_to_nets.get(name, []))
+                weight_cache[name] = 1.0 / np.sqrt(float(degree_weight)) if degree_weight > 0 else 0.0
+
             def inv_degree_sum(inst_names: List[str]) -> float:
-                total = 0.0
-                for inst_name in inst_names:
-                    degree_weight = len(self.site_to_nets.get(inst_name, []))
-                    if degree_weight > 0:
-                        total += 1.0 / np.sqrt(float(degree_weight))
-                return total
+                return sum(weight_cache.get(name, 0.0) for name in inst_names)
 
             io_sites_all = logic_inst_list + io_inst_list
             # io_increment = inv_degree_sum(io_sites_all) / denom_io
@@ -523,6 +525,7 @@ class NetManager:
         # ---- Logic matrix (site_to_site_connectivity) ----
         self.insts_matrix = torch.zeros((n, n), device=self.device)
 
+        src_ids, tgt_ids, vals = [], [], []
         for source_site, connections in self.site_to_site_connectivity.items():
             source_id = name_to_id.get(source_site)
             if source_id is None:
@@ -530,7 +533,17 @@ class NetManager:
             for target_site, connection_count in connections.items():
                 target_id = name_to_id.get(target_site)
                 if target_id is not None:
-                    self.insts_matrix[source_id, target_id] += connection_count
+                    src_ids.append(source_id)
+                    tgt_ids.append(target_id)
+                    vals.append(connection_count)
+
+        if src_ids:
+            self.insts_matrix.index_put_(
+                (torch.tensor(src_ids, device=self.device),
+                 torch.tensor(tgt_ids, device=self.device)),
+                torch.tensor(vals, device=self.device),
+                accumulate=True,
+            )
 
         if self.map_mode == 'simple':
             max_val = torch.max(self.insts_matrix)
@@ -544,6 +557,7 @@ class NetManager:
         # ---- IO matrix (io_to_site_connectivity) ----
         self.io_insts_matrix_all = torch.zeros((n + k, n + k), device=self.device)
 
+        io_src_ids, io_tgt_ids, io_vals = [], [], []
         for source_site, connections in self.io_to_site_connectivity.items():
             source_id = name_to_id.get(source_site)
             if source_id is None:
@@ -551,7 +565,17 @@ class NetManager:
             for target_site, connection_count in connections.items():
                 target_id = name_to_id.get(target_site)
                 if target_id is not None:
-                    self.io_insts_matrix_all[source_id, target_id] += connection_count
+                    io_src_ids.append(source_id)
+                    io_tgt_ids.append(target_id)
+                    io_vals.append(connection_count)
+
+        if io_src_ids:
+            self.io_insts_matrix_all.index_put_(
+                (torch.tensor(io_src_ids, device=self.device),
+                 torch.tensor(io_tgt_ids, device=self.device)),
+                torch.tensor(io_vals, device=self.device),
+                accumulate=True,
+            )
 
         self.io_insts_matrix = self.io_insts_matrix_all[0:n, n:n+k]
 
