@@ -30,7 +30,7 @@ class FpgaPlacer:
                  grid_type = GridType.SQUARE,
                  place_mode = IoMode.NORMAL,
                  utilization_factor = 0.3,
-                 debug = True,
+                 debug = False,
                  device = 'cpu',
                  record_mode = 'inverse_sqr',
                  map_mode = 'no', 
