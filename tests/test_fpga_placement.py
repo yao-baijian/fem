@@ -171,6 +171,13 @@ for instance in cfg.instances:
         instance_name=instance,
     )
 
+    # Save detailed timing report to file beside run.log
+    log_dir = f'result/{instance}'
+    timing_log_path = os.path.join(log_dir, 'timing_summary.log')
+    with open(timing_log_path, 'w', encoding='utf-8') as f:
+        f.write(timing_result.format_detailed_report())
+    INFO(f"Detailed timing summary saved to {timing_log_path}")
+
     # Constraint coeffs from placer (set internally from coeff_list or ML override)
     used_alpha = placer.constraint_coeffs.get('logic', 0.0)
     used_beta = placer.constraint_coeffs.get('io', 0.0)
