@@ -35,9 +35,42 @@ DEFAULT_CELL_DELAYS = {
     'IO':       {'min': 100e-12, 'max': 200e-12},
 }
 
+# 16nm technology node delays (smaller, faster transistors)
+CELL_DELAYS_16NM = {
+    'LUT':   {'min': 40e-12, 'max': 80e-12},
+    'FF':    {'clk2q': 40e-12, 'setup': 25e-12},
+    'CARRY': {'min': 30e-12, 'max': 60e-12},
+    'MUX':   {'min': 40e-12, 'max': 90e-12},
+    'DSP':   {'min': 200e-12, 'max': 500e-12},
+    'BRAM':  {'min': 300e-12, 'max': 600e-12},
+    'IO':    {'min': 100e-12, 'max': 200e-12},
+}
+
 # Wire delay per site pitch (ps per SLICE)
 # For Ultrascale: ~0.2-0.5 ps per site for local routing
-DEFAULT_WIRE_DELAY_PER_SITE = 0.35e-12  # 0.3 ps per site pitch
+DEFAULT_WIRE_DELAY_PER_SITE = 45e-12  # 45 ps per site pitch incremental RC delay
+DEFAULT_INTER_SITE_BASE_DELAY = 180e-12  # 180 ps base penalty for entering global switch matrix
+DEFAULT_INTRA_SITE_DELAY = 45e-12  # 45 ps for local intra-slice routing
+
+# Technology node parameter tables
+TECH_PARAMS = {
+    '20nm': {
+        'cell_delays': DEFAULT_CELL_DELAYS,
+        'wire_delay_per_site': DEFAULT_WIRE_DELAY_PER_SITE,
+        'inter_site_base_delay': DEFAULT_INTER_SITE_BASE_DELAY,
+        'intra_site_delay': DEFAULT_INTRA_SITE_DELAY,
+        'ff_setup_time': 40e-12,
+        'ff_clk2q_time': 60e-12,
+    },
+    '16nm': {
+        'cell_delays': CELL_DELAYS_16NM,
+        'wire_delay_per_site': DEFAULT_WIRE_DELAY_PER_SITE,
+        'inter_site_base_delay': DEFAULT_INTER_SITE_BASE_DELAY,
+        'intra_site_delay': DEFAULT_INTRA_SITE_DELAY,
+        'ff_setup_time': 25e-12,
+        'ff_clk2q_time': 40e-12,
+    },
+}
 
 # Default clock period if none specified (ns)
 DEFAULT_CLOCK_PERIOD = 5.0  # 200 MHz
@@ -346,6 +379,7 @@ class TimingAnalyzer:
         clock_period: float = DEFAULT_CLOCK_PERIOD,
         ff_setup_time: float = 40e-12,
         ff_clk2q_time: float = 60e-12,
+        tech_node: str = '20nm',
     ):
         """
         Args:
@@ -354,12 +388,17 @@ class TimingAnalyzer:
             clock_period: Target clock period in seconds.
             ff_setup_time: Flip-flop setup time (seconds).
             ff_clk2q_time: Flip-flop clock-to-Q delay (seconds).
+            tech_node: Technology node ('20nm' or '16nm').
         """
-        self.cell_delays = cell_delays or DEFAULT_CELL_DELAYS
+        # Look up technology parameters for the selected node
+        params = TECH_PARAMS.get(tech_node, TECH_PARAMS['20nm'])
+        self.cell_delays = cell_delays if cell_delays is not None else params['cell_delays']
         self.wire_delay_per_site = wire_delay_per_site
         self.clock_period = clock_period
         self.ff_setup_time = ff_setup_time
         self.ff_clk2q_time = ff_clk2q_time
+        self.inter_site_base_delay = params['inter_site_base_delay']
+        self.intra_site_delay = params['intra_site_delay']
         # UltraScale+ carry-chain boundary penalty (ps per CARRY8 macro crossing)
         self.carry_boundary_penalty = 180e-12
         # Clock uncertainty guard band (jitter + skew margin)
@@ -425,8 +464,11 @@ class TimingAnalyzer:
             hpwl = (max(xs) - min(xs)) + (max(ys) - min(ys))
             net_hpwls[net_name] = hpwl
 
-            # Estimate wire delay: HPWL * wire_delay_per_site
-            wire_delay = hpwl * self.wire_delay_per_site
+            # Estimate wire delay: base delay + HPWL * wire_delay_per_site
+            if hpwl == 0:
+                wire_delay = self.intra_site_delay
+            else:
+                wire_delay = self.inter_site_base_delay + (hpwl * self.wire_delay_per_site)
 
             # Fanout magnification: high-fanout nets suffer extra routing delay
             fanout = len(sites)
@@ -803,11 +845,12 @@ class TimingAnalyzer:
             _, site_b = cell_info.get(b, ('', ''))
             if site_a and site_a == site_b:
                 # Intra-site: internal slice routing has fixed pin-to-pin delay
-                delay = 45e-12
+                delay = self.intra_site_delay
             elif site_a in site_to_coord and site_b in site_to_coord:
                 x1, y1 = site_to_coord[site_a]
                 x2, y2 = site_to_coord[site_b]
-                delay = (abs(x1 - x2) + abs(y1 - y2)) * self.wire_delay_per_site
+                manhattan_dist = abs(x1 - x2) + abs(y1 - y2)
+                delay = self.inter_site_base_delay + (manhattan_dist * self.wire_delay_per_site)
             else:
                 return 0.0
             # Fanout magnification: high-fanout nets have extra routing delay
