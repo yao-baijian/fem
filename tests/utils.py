@@ -235,19 +235,20 @@ def run_timing_analysis(
     placer: FpgaPlacer,
     placement_legalized: Tuple[torch.Tensor, Optional[torch.Tensor]],
     clock_period_ns: float,
-    use_rapidwright: bool = True,
+    timing_engine: str = 'default',
     instance_name: str = "fem_placement",
 ) -> Any:
     """Run timing analysis on a FEM placement result.
 
     Args:
-        use_rapidwright: If True, use ``RapidWrightTimer`` (RW place + route).
-                         If False, use ``VivadoTimingRunner`` (Vivado Tcl flow).
+        timing_engine: One of ``'default'`` (our own STA via path-based FF-to-FF
+                       tracing), ``'rapidwright'`` (RapidWrightTimer — RW place
+                       + route), or ``'vivado'`` (Vivado Tcl flow).
     """
     logic_coords = placement_legalized[0]
     io_coords = placement_legalized[1] if len(placement_legalized) > 1 else None
 
-    if use_rapidwright:
+    if timing_engine == 'rapidwright':
         from fem_placer import RapidWrightTimer
         timer = RapidWrightTimer()
         return timer.run(
@@ -260,14 +261,29 @@ def run_timing_analysis(
             instance_name=instance_name,
             route_design=True,
         )
-    else:
-        from fem_placer.timer import TimingAnalyzer
-        analyzer = TimingAnalyzer(clock_period=clock_period_ns * 1e-9)
-        return analyzer.analyze_framework(
-            net_manager=placer.net_manager,
+    elif timing_engine == 'vivado':
+        from fem_placer.vivado_timer import VivadoTimingRunner
+        timer = VivadoTimingRunner()
+        return timer.run(
+            design=placer.design,
+            placer=placer,
             logic_coords=logic_coords,
             io_coords=io_coords,
             include_io=(io_coords is not None),
+            clock_period_ns=clock_period_ns,
+            instance_name=instance_name,
+        )
+    else:
+        # 'default' — our own implemented STA via path-based FF-to-FF tracing
+        from fem_placer.timer import TimingAnalyzer, analyze_placement_timing
+        return analyze_placement_timing(
+            placer=placer,
+            logic_coords=logic_coords,
+            io_coords=io_coords,
+            include_io=(io_coords is not None),
+            clock_period_ns=clock_period_ns,
+            mode='path',
+            design=placer.design,
         )
 
 
@@ -434,7 +450,7 @@ class PlacementTestRunner:
             placer=placer,
             placement_legalized=legalized,
             clock_period_ns=self.cfg.clock_period_ns,
-            use_rapidwright=True,
+            timing_engine='default',
             instance_name=instance,
         )
 

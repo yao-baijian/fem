@@ -167,7 +167,7 @@ for instance in cfg.instances:
         placer=placer,
         placement_legalized=(legalized.get('logic'), legalized.get('io')),
         clock_period_ns=cfg.clock_period_ns,
-        use_rapidwright=False,
+        timing_engine='default',
         instance_name=instance,
     )
 

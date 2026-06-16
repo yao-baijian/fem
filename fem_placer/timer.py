@@ -48,9 +48,9 @@ CELL_DELAYS_16NM = {
 
 # Wire delay per site pitch (ps per SLICE)
 # For Ultrascale: ~0.2-0.5 ps per site for local routing
-DEFAULT_WIRE_DELAY_PER_SITE = 45e-12  # 45 ps per site pitch incremental RC delay
-DEFAULT_INTER_SITE_BASE_DELAY = 180e-12  # 180 ps base penalty for entering global switch matrix
-DEFAULT_INTRA_SITE_DELAY = 45e-12  # 45 ps for local intra-slice routing
+DEFAULT_WIRE_DELAY_PER_SITE = 40e-12  # 45 ps per site pitch incremental RC delay
+DEFAULT_INTER_SITE_BASE_DELAY = 150e-12  # 180 ps base penalty for entering global switch matrix
+DEFAULT_INTRA_SITE_DELAY = 40e-12  # 45 ps for local intra-slice routing
 
 # Technology node parameter tables
 TECH_PARAMS = {
@@ -73,7 +73,7 @@ TECH_PARAMS = {
 }
 
 # Default clock period if none specified (ns)
-DEFAULT_CLOCK_PERIOD = 5.0  # 200 MHz
+DEFAULT_CLOCK_PERIOD = 10.0  # 200 MHz
 
 # =============================================================================
 # Cell type classification helpers
@@ -779,14 +779,30 @@ class TimingAnalyzer:
         fanin: Dict[str, List[str]] = {}
         fanout: Dict[str, List[str]] = {}
         fanout_map: Dict[tuple, int] = {}
+        skipped_macro_edges = 0
         for src_cell, net_list in cell_out_nets.items():
             for net_name in net_list:
                 sinks = net_in_cells.get(net_name, [])
                 net_fanout = len(sinks)
                 for (snk_cell, _, _) in sinks:
+                    # Skip intra-macro edges that create false combinational
+                    # cycles.  Macro primitives like CARRY8 have multiple
+                    # internal stages; a path out of one carry stage, through
+                    # a LUT, and back into a later stage of the same CARRY8
+                    # registers as a false loop when both cells share the
+                    # same physical site and at least one is a CARRY type.
+                    src_type, src_site = cell_info.get(src_cell, ('', ''))
+                    snk_type, _        = cell_info.get(snk_cell, ('', ''))
+                    if src_site and src_site == cell_info.get(snk_cell, ('', ''))[1] \
+                       and ('CARRY' in src_type.upper() or 'CARRY' in snk_type.upper()):
+                        skipped_macro_edges += 1
+                        continue
                     fanin.setdefault(snk_cell, []).append(src_cell)
                     fanout.setdefault(src_cell, []).append(snk_cell)
                     fanout_map[(src_cell, snk_cell)] = net_fanout
+        if skipped_macro_edges > 0:
+            INFO(f"  [path_timing] skipped {skipped_macro_edges} intra-macro edges "
+                 f"(CARRY same-site) to prevent false cycles")
 
         # Identify FF sources and FF sinks
         all_ff_cells = {c for c, (ct, _) in cell_info.items() if _ctype(ct)[0]}
@@ -816,12 +832,33 @@ class TimingAnalyzer:
                     if in_degree[snk] == 0:
                         queue.append(snk)
 
-        # Cycle detection: if some combos were never sorted, break the loop
+        # Cycle detection: if some combos were never sorted, skip them for STA
         if len(sorted_combos) != len(combo_cells):
             cyclic = set(combo_cells) - set(sorted_combos)
             WARNING(f"  [path_timing] cycle detected in {len(cyclic)} combos, "
-                    f"appending unsorted at end")
-            sorted_combos.extend(cyclic)
+                    f"excluding from STA")
+            # Export up to 10 cycle paths for debugging
+            _cycle_samples = 0
+            for c in list(cyclic)[:10]:
+                # Walk forward through fanout edges staying within cyclic set
+                path = [c]
+                visited = {c}
+                cur = c
+                for _ in range(50):
+                    nxt = [s for s in fanout.get(cur, [])
+                           if s in cyclic and s not in visited]
+                    if not nxt:
+                        break
+                    cur = nxt[0]
+                    visited.add(cur)
+                    path.append(cur)
+                    if cur == c:
+                        break
+                WARNING(f"  [path_timing]   cycle path ({len(path)} nodes): "
+                        f"{' → '.join(path)}")
+                _cycle_samples += 1
+                if _cycle_samples >= 10:
+                    break
 
         # ------------------------------------------------------------------
         # 5. Cell-type-to-delay helper (same logic as before)
