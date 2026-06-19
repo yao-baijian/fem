@@ -331,6 +331,108 @@ class NetManager:
 
                 f.write(f"{idx}\t{net_name}\t{hpwl:.2f}\t{instance_count}\t{instances_str}\n")
 
+    def analyze_vpr_nets(self, nets_dict, io_block_set, logic_instances, io_instances):
+        """
+        Build connectivity matrices from VPR parsed netlist data.
+
+        Args:
+            nets_dict: dict ``{net_name: set_of_block_names}`` from VPR XML parsing.
+            io_block_set: set of block names identified as IO pads.
+            logic_instances: InstanceGroup for logic blocks.
+            io_instances: InstanceGroup for IO blocks, or None.
+
+        Returns:
+            dict with keys ``logic_net_num`` and ``total_net_num``.
+        """
+        logic_insts_num = logic_instances.num
+        io_insts_num = io_instances.num if io_instances is not None else 0
+
+        logic_name_set = set(logic_instances.name_to_id.keys())
+        io_name_set = set(io_instances.name_to_id.keys()) if io_instances is not None else set()
+
+        self.net_to_sites.clear()
+        self.site_to_nets = defaultdict(list)
+        connectivity_groups = []
+        valid_net_count = 0
+        sites_net_list = []
+
+        for net_name, blocks in nets_dict.items():
+            logic_sites = set()
+            io_sites = set()
+            sites_in_net = set()
+
+            for block_name in blocks:
+                if block_name.startswith('__top_'):
+                    # Abstract top-level port — skip as a placed site
+                    continue
+                sites_in_net.add(block_name)
+                if block_name in logic_name_set:
+                    logic_sites.add(block_name)
+                elif block_name in io_name_set:
+                    io_sites.add(block_name)
+
+            if len(logic_sites) + len(io_sites) < 2:
+                continue
+
+            self.net_to_sites[net_name] = list(logic_sites) + list(io_sites)
+            for site_name in sites_in_net:
+                self.site_to_nets[site_name].append(net_name)
+
+            connectivity_groups.append((logic_sites, io_sites))
+
+            if len(logic_sites) >= 2:
+                valid_net_count += 1
+                sites_net_list.append(logic_sites)
+
+        # Replay connectivity recording
+        for logic_sites, io_sites in connectivity_groups:
+            self._record_connectivity(logic_sites, io_sites)
+
+        # Build coupling matrices (net_tensor skipped — unused outside hpwl_mode)
+        self._create_net_matrix(logic_insts_num, io_insts_num)
+
+        # Estimate logic depth from VPR data
+        self._estimate_logic_depth_from_vpr(nets_dict, logic_name_set)
+
+        if self.debug:
+            self.save_matrix_debug_info(logic_insts_num, io_insts_num)
+
+        total_connectivity_nets = len(self.site_to_site_connectivity)
+        INFO(f"VPR: Processed {len(connectivity_groups)} nets, "
+             f"{total_connectivity_nets} site-to-site routes, "
+             f"{len(self.net_to_sites)} inter-tile routes")
+
+        return {
+            'logic_net_num': total_connectivity_nets,
+            'total_net_num': len(nets_dict)
+        }
+
+    def _estimate_logic_depth_from_vpr(self, nets_dict, logic_name_set):
+        """Estimate logic depth from VPR netlist data."""
+        try:
+            site_connectivity = {}
+            for net_name, blocks in nets_dict.items():
+                logic_blocks_in_net = {b for b in blocks if b in logic_name_set}
+                if len(logic_blocks_in_net) < 2:
+                    continue
+                for site in logic_blocks_in_net:
+                    site_connectivity[site] = site_connectivity.get(site, 0) + len(logic_blocks_in_net)
+
+            if not site_connectivity:
+                self.logic_depth = 1.0
+                return
+
+            avg_connectivity = sum(site_connectivity.values()) / len(site_connectivity)
+            total_sites = len(site_connectivity)
+            depth_factor = avg_connectivity / max(1.0, np.sqrt(total_sites))
+            self.logic_depth = min(2.0, max(0.5, depth_factor / 10.0))
+
+            INFO(f"VPR logic depth factor: {self.logic_depth:.3f} "
+                 f"(avg_connectivity: {avg_connectivity:.2f}, sites: {total_sites})")
+        except Exception as e:
+            WARNING(f"Failed to estimate VPR logic depth: {e}, using default 1.0")
+            self.logic_depth = 1.0
+
     def analyze_nets(self, logic_instances, io_instances):
 
         logic_insts_num = logic_instances.num
