@@ -35,11 +35,11 @@ OPT_KWARGS = dict(
 # Per-circuit overrides — VPR mode only optimises logic area
 # Each entry accepts: coeff_list, h_factor_list, num_steps, anneal, record_mode, map_mode
 CIRCUIT_OVERRIDES = {
-    'ch_intrinsics': dict(coeff_list=[10], h_factor_list=[0.01], num_steps=3000, anneal='lin',
-                          record_mode='simple', map_mode='no'),
+    # 'ch_intrinsics': dict(coeff_list=[10], h_factor_list=[0.01], num_steps=3000, anneal='lin',
+    #                       record_mode='simple', map_mode='no'),
     # 'bgm':           dict(coeff_list=[0.05], h_factor_list=[0.01], num_steps=5000, anneal='inverse',
     #                       record_mode='inverse_sqr', map_mode='no'),
-    'LU8PEEng':      dict(coeff_list=[0.05],  h_factor_list=[0.01], num_steps=3000, anneal='inverse',
+    'LU8PEEng':      dict(coeff_list=[0.03],  h_factor_list=[0.01], num_steps=5000, anneal='exp',
                           record_mode='inverse_sqr', map_mode='no'),
     # 'blob_merge':    dict(coeff_list=[0.08], h_factor_list=[0.01], num_steps=5000, anneal='inverse',
     #                       record_mode='inverse_sqr', map_mode='no'),
@@ -47,8 +47,10 @@ CIRCUIT_OVERRIDES = {
     #                       record_mode='inverse_sqr', map_mode='no'),
     # 'mkDelayWorker32B': dict(coeff_list=[500], h_factor_list=[0.01], num_steps=5000, anneal='inverse',
     #                          record_mode='inverse', map_mode='no'),
-    'stereovision0': dict(coeff_list=[1],  h_factor_list=[0.01], num_steps=5000, anneal='inverse',
-                          record_mode='inverse', map_mode='no'),
+    # 'stereovision0': dict(coeff_list=[0.1],  h_factor_list=[0.01], num_steps=7000, anneal='inverse',
+    #                       record_mode='inverse', map_mode='no'),
+    # 'stereovision0': dict(coeff_list=[0.07],  h_factor_list=[0.01], num_steps=7000, anneal='exp',
+    #                       record_mode='inverse_sqr', map_mode='no'),
 }
 
 HEADER = (
@@ -141,4 +143,3 @@ for circuit in CIRCUIT_OVERRIDES:
     placer.close()
 
 print("-" * len(HEADER))
-print("All circuits passed!")
