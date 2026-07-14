@@ -371,8 +371,8 @@ def plot_figure1(csv_path='./result/final_best_results.csv', output='combined_fi
     instances, modes, by_instance, vivado_hpwl = load_best_csv(csv_path)
 
     # 新布局：两行，第一行占满，第二行三等分
-    fig = plt.figure(figsize=(16, 10), dpi=150)   # 高度适当增加
-    gs = fig.add_gridspec(2, 3, height_ratios=[1.2, 1])  # 第一行略高，突出主图
+    fig = plt.figure(figsize=(16, 9), dpi=150)   # 高度适当增加
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 1], width_ratios=[2, 1, 1])  # 第一行略高，突出主图
 
     ax_a = fig.add_subplot(gs[0, :])   # 第一行占满3列
     ax_b = fig.add_subplot(gs[1, 0])   # 第二行左
