@@ -241,6 +241,7 @@ class FPGAPlacementOptimizer:
             INFO(f"CUDA memory before optimization: {mem_initial / 1024**2:.2f} MB")
 
         _t_loop = _time.time()
+        _log_interval = 500 if self.num_steps > 1000 else self.num_steps
         for step in range(self.num_steps):
             ps = {r: torch.softmax(hs[r], dim=2) for r in self.regions}
             opt.zero_grad()
@@ -259,6 +260,10 @@ class FPGAPlacementOptimizer:
 
             if cuda_available:
                 mem_log.append(torch.cuda.memory_allocated())
+
+            if (step + 1) % _log_interval == 0:
+                INFO(f"  Step {step + 1}/{self.num_steps} — loss={loss.item():.4f}, "
+                     f"free_energy={free_energy.item():.4f}")
 
         _loop_time = _time.time() - _t_loop
         INFO(f"Iteration loop ({self.num_steps} steps) took {_loop_time:.2f}s")

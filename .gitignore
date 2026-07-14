@@ -177,3 +177,5 @@ result/*
 
 
 *.jou
+
+vtr/output_dir

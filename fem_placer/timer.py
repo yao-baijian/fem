@@ -48,9 +48,9 @@ CELL_DELAYS_16NM = {
 
 # Wire delay per site pitch (ps per SLICE)
 # For Ultrascale: ~0.2-0.5 ps per site for local routing
-DEFAULT_WIRE_DELAY_PER_SITE = 45e-12  # 45 ps per site pitch incremental RC delay
-DEFAULT_INTER_SITE_BASE_DELAY = 180e-12  # 180 ps base penalty for entering global switch matrix
-DEFAULT_INTRA_SITE_DELAY = 45e-12  # 45 ps for local intra-slice routing
+DEFAULT_WIRE_DELAY_PER_SITE = 40e-12  # 45 ps per site pitch incremental RC delay
+DEFAULT_INTER_SITE_BASE_DELAY = 150e-12  # 180 ps base penalty for entering global switch matrix
+DEFAULT_INTRA_SITE_DELAY = 40e-12  # 45 ps for local intra-slice routing
 
 # Technology node parameter tables
 TECH_PARAMS = {
@@ -73,7 +73,7 @@ TECH_PARAMS = {
 }
 
 # Default clock period if none specified (ns)
-DEFAULT_CLOCK_PERIOD = 5.0  # 200 MHz
+DEFAULT_CLOCK_PERIOD = 10.0  # 200 MHz
 
 # =============================================================================
 # Cell type classification helpers
@@ -184,6 +184,12 @@ class TimingSummary:
     max_fanout: int = 0      # Maximum net fanout
     avg_fanout: float = 0.0  # Average net fanout
     unidentified_cells: int = 0  # Cells not classified as FF or combo
+    # ---- Detailed-report fields (populated by analyzer) ----
+    net_hpwls: Dict[str, float] = field(default_factory=dict)       # Per-net HPWL
+    net_site_counts: Dict[str, int] = field(default_factory=dict)    # Sites per net
+    sorted_nets: List[Tuple[str, float, float, int]] = field(default_factory=list)  # (name, hpwl, delay, sites)
+    path_delays: List[float] = field(default_factory=list)           # All estimated path delays
+    logic_levels_per_path: List[int] = field(default_factory=list)   # Logic levels per path (if available)
 
     def format_report(self) -> str:
         """Format timing summary as a readable report string."""
@@ -210,8 +216,150 @@ class TimingSummary:
         if self.top_violated_nets:
             lines.append(f"  Top Violated Nets   :")
             for net_name, slack in self.top_violated_nets[:10]:
-                lines.append(f"    {net_name:<40s} slack={slack*1e9:.3f} ns")
+                lines.append(f"    {str(net_name):<40s} slack={slack*1e9:.3f} ns")
         lines.append("=" * 65)
+        return "\n".join(lines)
+
+    def format_detailed_report(self) -> str:
+        """Format a comprehensive, detailed timing report string.
+
+        Includes per-net breakdown, delay distribution histograms,
+        top violated endpoints, cell-type counts, and more.
+        """
+        lines = []
+        w = 65
+        lines.append("=" * w)
+        lines.append("  Detailed Timing Analysis Report")
+        lines.append("=" * w)
+
+        # ---- Summary section ----
+        lines.append("")
+        lines.append("  ── Timing Summary ──")
+        lines.append(f"  Critical Path Delay : {self.critical_path_delay*1e9:.3f} ns")
+        lines.append(f"  Estimated Period    : {self.estimated_period*1e9:.3f} ns")
+        lines.append(f"  Estimated Fmax      : {self.fmax:.1f} MHz")
+        lines.append(f"  WNS (Worst Neg Slack): {self.wns*1e9:.3f} ns")
+        lines.append(f"  TNS (Total Neg Slack): {self.tns*1e9:.3f} ns")
+        lines.append(f"  Logic Depth         : {self.logic_depth} levels")
+        lines.append(f"  Timing Paths        : {self.num_paths}")
+        lines.append(f"  Violating Paths     : {self.num_violations}")
+        lines.append(f"  Max Fanout          : {self.max_fanout}")
+        lines.append(f"  Avg Fanout          : {self.avg_fanout:.1f}")
+
+        # ---- Cell type breakdown ----
+        if self.cell_type_counts:
+            lines.append("")
+            lines.append("  ── Cell Type Breakdown ──")
+            lines.append(f"  {'Type':<25s} {'Count':>8s}")
+            lines.append(f"  {'----':<25s} {'-----':>8s}")
+            top_types = sorted(self.cell_type_counts.items(), key=lambda x: -x[1])
+            for t, c in top_types:
+                lines.append(f"  {t:<25s} {c:>8d}")
+            lines.append(f"  {'Unidentified':<25s} {self.unidentified_cells:>8d}")
+
+        # ---- Top Nets by wire delay ----
+        if self.sorted_nets:
+            lines.append("")
+            lines.append("  ── Top 30 Nets by Wire Delay ──")
+            lines.append(f"  {'Rank':<6s} {'Net Name':<50s} {'Sites':>6s} {'HPWL':>10s} {'Delay(ns)':>12s}")
+            lines.append(f"  {'----':<6s} {'--------':<50s} {'-----':>6s} {'----':>10s} {'---------':>12s}")
+            for rank, (net_name, hpwl, delay, sites) in enumerate(self.sorted_nets[:30], 1):
+                lines.append(f"  {rank:<6d} {str(net_name):<50s} {sites:>6d} {hpwl:>10.1f} {delay*1e9:>12.3f}")
+            if len(self.sorted_nets) > 30:
+                lines.append(f"  ... ({len(self.sorted_nets) - 30} more nets)")
+
+        # ---- Delay distribution ----
+        if self.sorted_nets:
+            delays_ns = [d * 1e9 for _, _, d, _ in self.sorted_nets]
+            lines.append("")
+            lines.append("  ── Wire Delay Distribution ──")
+            lines.append(f"  Total nets with >= 2 instances : {len(self.sorted_nets)}")
+            if delays_ns:
+                lines.append(f"  Min wire delay                : {min(delays_ns):.4f} ns")
+                lines.append(f"  Max wire delay                : {max(delays_ns):.4f} ns")
+                lines.append(f"  Mean wire delay               : {sum(delays_ns)/len(delays_ns):.4f} ns")
+                lines.append(f"  Median wire delay             : {sorted(delays_ns)[len(delays_ns)//2]:.4f} ns")
+                # Bucketed histogram
+                buckets = [0.0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, float('inf')]
+                labels  = ["<0.01", "0.01-0.02", "0.02-0.05", "0.05-0.10", "0.10-0.20", "0.20-0.50", "0.50-1.00", ">=1.00"]
+                lines.append(f"  {'Bucket (ns)':<15s} {'Count':>8s} {'%':>8s}")
+                lines.append(f"  {'------------':<15s} {'-----':>8s} {'--':>8s}")
+                for lo, hi, lbl in zip(buckets[:-1], buckets[1:], labels):
+                    cnt = sum(1 for d in delays_ns if lo <= d < hi)
+                    pct = 100.0 * cnt / len(delays_ns)
+                    bar = "█" * max(1, int(pct / 2))
+                    lines.append(f"  {lbl:<15s} {cnt:>8d} {pct:>7.1f}%  {bar}")
+
+        # ---- Fanout distribution ----
+        if self.net_site_counts:
+            fanouts = list(self.net_site_counts.values())
+            lines.append("")
+            lines.append("  ── Fanout Distribution ──")
+            lines.append(f"  {'Fanout':<10s} {'Count':>8s} {'%':>8s}")
+            lines.append(f"  {'------':<10s} {'-----':>8s} {'--':>8s}")
+            max_fo = max(fanouts)
+            for fo in range(1, min(max_fo + 1, 21)):
+                cnt = sum(1 for f in fanouts if f == fo)
+                if cnt > 0:
+                    pct = 100.0 * cnt / len(fanouts)
+                    bar = "█" * max(1, int(pct / 2))
+                    lines.append(f"  {fo:<10d} {cnt:>8d} {pct:>7.1f}%  {bar}")
+            if max_fo > 20:
+                cnt_rest = sum(1 for f in fanouts if f > 20)
+                pct_rest = 100.0 * cnt_rest / len(fanouts)
+                lines.append(f"  >20         {cnt_rest:>8d} {pct_rest:>7.1f}%")
+
+        # ---- Path delay distribution ----
+        if self.path_delays:
+            lines.append("")
+            lines.append("  ── Path Delay Distribution ──")
+            pd_ns = [p * 1e9 for p in self.path_delays]
+            lines.append(f"  Total path stages           : {len(pd_ns)}")
+            lines.append(f"  Min path delay              : {min(pd_ns):.4f} ns")
+            lines.append(f"  Max path delay              : {max(pd_ns):.4f} ns")
+            lines.append(f"  Mean path delay             : {sum(pd_ns)/len(pd_ns):.4f} ns")
+            # Slack histogram — use estimated_period as clock period proxy
+            period_ns = self.estimated_period * 1e9 if self.estimated_period > 0 else max(pd_ns)
+            slacks = [period_ns - p for p in pd_ns]
+            neg_slacks = [s for s in slacks if s < 0]
+            lines.append(f"  Paths with negative slack    : {len(neg_slacks)}")
+            if neg_slacks:
+                lines.append(f"  Worst negative slack         : {min(neg_slacks):.4f} ns")
+
+        # ---- Top violated endpoints ----
+        if self.top_violated_nets:
+            lines.append("")
+            lines.append("  ── Top 20 Violated Endpoints ──")
+            lines.append(f"  {'Rank':<6s} {'Endpoint / Net':<55s} {'Slack (ns)':>12s}")
+            lines.append(f"  {'----':<6s} {'--------------':<55s} {'----------':>12s}")
+            for rank, (name, slack) in enumerate(self.top_violated_nets[:20], 1):
+                lines.append(f"  {rank:<6d} {str(name):<55s} {slack*1e9:>12.3f}")
+
+        # ---- Logic depth per path ----
+        if self.logic_levels_per_path:
+            lines.append("")
+            lines.append("  ── Logic Depth Distribution ──")
+            lines.append(f"  {'Levels':<10s} {'Count':>8s}")
+            lines.append(f"  {'------':<10s} {'-----':>8s}")
+            from collections import Counter
+            for lvl, cnt in sorted(Counter(self.logic_levels_per_path).items()):
+                lines.append(f"  {lvl:<10d} {cnt:>8d}")
+
+        # ---- Timing closure assessment ----
+        lines.append("")
+        lines.append("  ── Timing Closure Assessment ──")
+        if self.num_violations == 0 and self.wns >= 0:
+            lines.append(f"  All timing constraints met (WNS = {self.wns*1e9:.3f} ns)")
+        else:
+            lines.append(f"  {self.num_violations} paths violating (TNS = {self.tns*1e9:.3f} ns)")
+            lines.append(f"  Worst slack: {self.wns*1e9:.3f} ns")
+        lines.append(f"  Estimated Fmax: {self.fmax:.1f} MHz")
+        period = self.estimated_period if self.estimated_period > 0 else self.critical_path_delay
+        if period > 0:
+            margin_pct = 100.0 * max(0, self.wns) / (period * 1e9) if period > 0 else 0
+            lines.append(f"  Timing margin: {self.wns*1e9:.3f} ns ({margin_pct:.1f}% of critical path)")
+
+        lines.append("=" * w)
         return "\n".join(lines)
 
 
@@ -437,6 +585,13 @@ class TimingAnalyzer:
             top_violated_nets=top_violated[:20],
             max_fanout=max_fanout,
             avg_fanout=avg_fanout,
+            # Detailed-report fields
+            net_hpwls=net_hpwls,
+            net_site_counts=net_site_counts,
+            sorted_nets=[(str(n), net_hpwls.get(n, 0.0), d, net_site_counts.get(n, 0))
+                         for n, d in sorted_nets],
+            path_delays=all_path_delays,
+            logic_levels_per_path=[logic_levels] * len(sorted_nets),
         )
 
     # =========================================================================
@@ -624,14 +779,30 @@ class TimingAnalyzer:
         fanin: Dict[str, List[str]] = {}
         fanout: Dict[str, List[str]] = {}
         fanout_map: Dict[tuple, int] = {}
+        skipped_macro_edges = 0
         for src_cell, net_list in cell_out_nets.items():
             for net_name in net_list:
                 sinks = net_in_cells.get(net_name, [])
                 net_fanout = len(sinks)
                 for (snk_cell, _, _) in sinks:
+                    # Skip intra-macro edges that create false combinational
+                    # cycles.  Macro primitives like CARRY8 have multiple
+                    # internal stages; a path out of one carry stage, through
+                    # a LUT, and back into a later stage of the same CARRY8
+                    # registers as a false loop when both cells share the
+                    # same physical site and at least one is a CARRY type.
+                    src_type, src_site = cell_info.get(src_cell, ('', ''))
+                    snk_type, _        = cell_info.get(snk_cell, ('', ''))
+                    if src_site and src_site == cell_info.get(snk_cell, ('', ''))[1] \
+                       and ('CARRY' in src_type.upper() or 'CARRY' in snk_type.upper()):
+                        skipped_macro_edges += 1
+                        continue
                     fanin.setdefault(snk_cell, []).append(src_cell)
                     fanout.setdefault(src_cell, []).append(snk_cell)
                     fanout_map[(src_cell, snk_cell)] = net_fanout
+        if skipped_macro_edges > 0:
+            INFO(f"  [path_timing] skipped {skipped_macro_edges} intra-macro edges "
+                 f"(CARRY same-site) to prevent false cycles")
 
         # Identify FF sources and FF sinks
         all_ff_cells = {c for c, (ct, _) in cell_info.items() if _ctype(ct)[0]}
@@ -661,12 +832,33 @@ class TimingAnalyzer:
                     if in_degree[snk] == 0:
                         queue.append(snk)
 
-        # Cycle detection: if some combos were never sorted, break the loop
+        # Cycle detection: if some combos were never sorted, skip them for STA
         if len(sorted_combos) != len(combo_cells):
             cyclic = set(combo_cells) - set(sorted_combos)
             WARNING(f"  [path_timing] cycle detected in {len(cyclic)} combos, "
-                    f"appending unsorted at end")
-            sorted_combos.extend(cyclic)
+                    f"excluding from STA")
+            # Export up to 10 cycle paths for debugging
+            _cycle_samples = 0
+            for c in list(cyclic)[:10]:
+                # Walk forward through fanout edges staying within cyclic set
+                path = [c]
+                visited = {c}
+                cur = c
+                for _ in range(50):
+                    nxt = [s for s in fanout.get(cur, [])
+                           if s in cyclic and s not in visited]
+                    if not nxt:
+                        break
+                    cur = nxt[0]
+                    visited.add(cur)
+                    path.append(cur)
+                    if cur == c:
+                        break
+                WARNING(f"  [path_timing]   cycle path ({len(path)} nodes): "
+                        f"{' → '.join(path)}")
+                _cycle_samples += 1
+                if _cycle_samples >= 10:
+                    break
 
         # ------------------------------------------------------------------
         # 5. Cell-type-to-delay helper (same logic as before)

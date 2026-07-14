@@ -22,6 +22,14 @@ from com.xilinx.rapidwright.rwroute import RWRoute
 
 
 
+class VprBlock:
+    """Minimal wrapper that mimics RapidWright SiteInst.getName() for VPR blocks."""
+    def __init__(self, name: str):
+        self._name = name
+    def getName(self):
+        return self._name
+
+
 class FpgaPlacer:
 
     def __init__(self, 
@@ -614,6 +622,139 @@ class FpgaPlacer:
         inst_num = {f'{r}_inst_num': self.instances[r].num for r in self.regions}
 
         return vivado_hpwl, inst_num, net_num
+
+    # ------------------------------------------------------------------ #
+    #  VPR (.place / .net) initialisation
+    # ------------------------------------------------------------------ #
+
+    def init_placement_vpr(self, place_file: str, net_file: str):
+        """
+        Initialise placement from VPR ``.place`` and ``.net`` files.
+
+        Parses the VPR placement and XML netlist, builds instance groups,
+        grids, connectivity matrices, and coordinate tensors — exactly as
+        ``init_placement()`` does for DCP files.
+
+        Returns:
+            ``(hpwl, inst_num, net_num)`` — same signature as ``init_placement()``.
+        """
+        from vtr.vtr_hpwl import parse_place, parse_netlist_xml
+
+        # ----- 1. Parse VPR files -----
+        coords, width, height = parse_place(place_file)
+        nets, io_blocks = parse_netlist_xml(net_file)
+
+        INFO(f"VPR: parsed {place_file}, {net_file}")
+        INFO(f"VPR: grid {width}x{height}, {len(coords)} blocks, "
+             f"{len(io_blocks)} IO pads, {len(nets)} nets")
+
+        # ----- 2. Classify blocks into logic / IO -----
+        logic_blocks = []
+        io_blocks_found = []
+        for block_name in coords:
+            if block_name in io_blocks:
+                io_blocks_found.append(block_name)
+                self.instances['io'].add(VprBlock(block_name))
+            else:
+                logic_blocks.append(block_name)
+                self.instances['logic'].add(VprBlock(block_name))
+
+        num_logic = len(logic_blocks)
+        num_io = len(io_blocks_found)
+        INFO(f"VPR: classified {num_logic} logic, {num_io} IO blocks")
+
+        # ----- 3. Total stats -----
+        self.total_insts_num = len(coords)
+        self.other_insts_num = 0
+
+        # Fill per-region constraint coefficients
+        for r in self.regions:
+            if r in self.constraint_coeffs:
+                continue
+            if r == 'logic':
+                self.constraint_coeffs[r] = num_logic / 2
+            elif r == 'io':
+                self.constraint_coeffs[r] = self.constraint_coeffs.get('logic', 0)
+
+        stat_parts = ' + '.join(
+            f"{self.instances[r].num} {r}" for r in self.regions if r in self.instances
+        )
+        INFO(f"VPR sites stat: {stat_parts}")
+
+        # ----- 4. Build logic grid from .place dimensions -----
+        logic_grid = self.grids['logic']
+        logic_grid.start_x = 0
+        logic_grid.start_y = 0
+        logic_grid.area_length = width
+        logic_grid.area_width = height
+        logic_grid.__post_init__()
+
+        if num_logic > logic_grid.area:
+            ERROR(f"VPR: logic instances ({num_logic}) exceed grid area ({logic_grid.area})")
+
+        INFO(f"VPR: logic grid {width}x{height}, "
+             f"utilization {num_logic / (width * height):.3f}")
+
+        # ----- 5. IO area -----
+        if 'io' in self.instances and num_io > 0:
+            self._init_vpr_io_area(width, height)
+
+        # ----- 6. Create ID mappings -----
+        self._map_site_to_id()
+
+        # ----- 7. Compute HPWL from parsed VPR data (logic-only) -----
+        vpr_hpwl = self._compute_vpr_hpwl(coords, nets, io_blocks, width, height)
+
+        # ----- 8. Build connectivity matrices via NetManager -----
+        net_num = self.net_manager.analyze_vpr_nets(
+            nets_dict=nets,
+            io_block_set=io_blocks,
+            logic_instances=self.instances['logic'],
+            io_instances=self.instances.get('io'),
+        )
+
+        # ----- 9. Generate region coordinate tensors -----
+        for r in self.regions:
+            getter = getattr(self, f'_get_{r}_area_coords', None)
+            if getter is not None:
+                getter()
+        self._get_combined_coords()
+
+        inst_num = {f'{r}_inst_num': self.instances[r].num for r in self.regions}
+
+        return vpr_hpwl, inst_num, net_num
+
+    # ------------------------------------------------------------------ #
+    #  VPR helpers
+    # ------------------------------------------------------------------ #
+
+    def _init_vpr_io_area(self, grid_width: int, grid_height: int):
+        """Set up IO area along the left side of the VPR grid."""
+        num_pins = self.instances['io'].num
+        io_length = 1
+        io_width = max(num_pins, grid_height)
+
+        io_grid = self.grids['io']
+        io_grid.start_x = -io_length
+        io_grid.start_y = 0
+        io_grid.area_length = io_length
+        io_grid.area_width = io_width
+        io_grid.__post_init__()
+
+        if num_pins > io_grid.area:
+            ERROR(f"VPR IO: {num_pins} instances exceed IO grid area ({io_grid.area})")
+
+        INFO(f"VPR IO area: ({io_grid.start_x}, {io_grid.start_y}) "
+             f"to ({io_grid.end_x}, {io_grid.end_y})")
+
+    def _compute_vpr_hpwl(self, coords: dict, nets: dict, io_blocks: set,
+                          width: int, height: int) -> float:
+        """Compute total HPWL from VPR placement (logic-only, site-level)."""
+        from vtr.vtr_hpwl import compute_hpwl
+        results = compute_hpwl(coords, nets, io_blocks, width, height, exclude_io=True)
+        total = results['total_all']
+        INFO(f"VPR HPWL: {total:.2f} across {results['num_nets_all']} active nets")
+        return total
 
     def save_init_params(self, instance_name, result_dir='result'):
         os.makedirs(os.path.join(result_dir, instance_name), exist_ok=True)
