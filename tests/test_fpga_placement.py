@@ -72,8 +72,8 @@ for instance in cfg.instances:
     placer = FpgaPlacer(cfg)
     placer.set_instance_name(instance)
 
-    dcp_path = f"./vivado/output_dir/{instance}/post_impl.dcp"
-    pl_path = f"./vivado/output_dir/{instance}/optimized_placement.pl"
+    dcp_path = f"./vivado/output_timing_dir/{instance}/post_impl.dcp"
+    pl_path = f"./vivado/output_timing_dir/{instance}/optimized_placement.pl"
     vivado_hpwl, inst_num, net_num = placer.init_placement(dcp_path, pl_path)
 
     net_ratio = f"{net_num['logic_net_num']}/{net_num['total_net_num']}"
